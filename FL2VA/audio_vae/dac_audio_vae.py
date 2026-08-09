@@ -41,8 +41,22 @@ class Snake1d(nn.Module):
 
 
 def init_weights(m):
+    """Initialize Conv1d layers, including those wrapped with ``weight_norm``.
+
+    The encoder (``WNConv1d``) and decoder (BigVGAN) both wrap ``nn.Conv1d``
+    with ``torch.nn.utils.parametrizations.weight_norm``. Under that
+    parametrization ``m.weight`` is computed on access from
+    ``m.weight_g`` and ``m.weight_v``; an in-place init on the
+    parametrized tensor is a no-op for the stored parameters and silently
+    leaves the layer at its previous initialization. Branch on the
+    parametrized attributes to actually update the underlying parameters.
+    """
     if isinstance(m, nn.Conv1d):
-        nn.init.trunc_normal_(m.weight, std=0.02)
+        if hasattr(m, "weight_v") and hasattr(m, "weight_g"):
+            nn.init.trunc_normal_(m.weight_v, std=0.02)
+            nn.init.constant_(m.weight_g, 1.0)
+        else:
+            nn.init.trunc_normal_(m.weight, std=0.02)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
