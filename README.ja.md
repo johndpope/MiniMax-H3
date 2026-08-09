@@ -16,23 +16,23 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> |
+  <a href="README.md">English</a> |
   <a href="README.zh-CN.md">简体中文</a> |
   <a href="README.ko.md">한국어</a> |
-  <a href="README.ja.md">日本語</a>
+  <a href="README.ja.md"><strong>日本語</strong></a>
 </p>
 
 # MiniMax H3
 
-## Prompt Writing Skill
+## プロンプト作成スキル
 
-Install the H3 prompt writing skill — one of nine skills bundled with this repository:
+このリポジトリに同梱されている 9 つのスキルの 1 つである H3 プロンプト作成スキルをインストールします:
 
 ```bash
 npx skills add https://github.com/MiniMax-AI/MiniMax-H3 --skill h3-prompt-writing
 ```
 
-It ships with two prompt guides under `skills/h3-prompt-writing/references/`: `base-en.txt` for text/keyframe modes and `ref-en.txt` for full-reference (Ref2VA) mode. The remaining eight are style-specific video generation skills:
+このスキルには `skills/h3-prompt-writing/references/` 配下に 2 つのプロンプトガイドが含まれています。`base-en.txt` はテキスト/キーフレームモード用、`ref-en.txt` はフルリファレンス（Ref2VA）モード用です。残りの 8 つはスタイル別の動画生成スキルです:
 
 <table align="center">
   <tr>
@@ -49,67 +49,67 @@ It ships with two prompt guides under `skills/h3-prompt-writing/references/`: `b
   </tr>
 </table>
 
-## Online API
-Use MiniMax\-H3 directly via API\. 
+## オンライン API
+API 経由で MiniMax\-H3 を直接利用できます。
 - Global: [platform\.minimax\.io](https://platform.minimax.io/docs/api-reference/video-generation-v2-create) \| CN: [platform\.minimaxi\.com](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)
 
-## Online App
-Use MiniMax\-H3 directly via App\.
+## オンラインアプリ
+アプリ経由で MiniMax\-H3 を直接利用できます。
 - WebApp Global: [hailuoai\.video](https://hailuoai.video/tools/minimax-h3) \| CN: [hailuoai\.com](https://hailuoai.com/)
 - Desktop Global: [hub\.minimax\.io](https://hub.minimax.io/) \| CN: [hub\.minimaxi\.com](https://hub.minimaxi.com/)
 
 
-## System Overview
-MiniMax H3 is a general-purpose, omni-modal generative system. It supports unified understanding of multimodal contexts composed of text, images, video, and audio, and can generate video with native stereo audio at resolutions up to 2K and durations of up to 15 seconds. Thanks to its task-generalization-oriented system design, H3 already possesses broad multimodal context understanding and generation capabilities at the pre-training stage, enabling outstanding performance in following complex multimodal instructions.
+## システム概要
+MiniMax H3 は汎用のオムニモーダル生成システムです。テキスト、画像、動画、音声で構成されるマルチモーダルなコンテキストを統合的に理解し、最大 2K 解像度、最大 15 秒、ネイティブステレオ音声付きの動画を生成できます。タスク汎化を重視したシステム設計により、H3 は事前学習段階ですでに幅広いマルチモーダルコンテキストの理解と生成能力を備えており、複雑なマルチモーダル指示への追従に優れた性能を発揮します。
 
-H3 supports the following input and output specifications:
+H3 は以下の入出力仕様をサポートします:
 
-| Category | Specification |
+| カテゴリ | 仕様 |
 |---|---|
-| Output duration | 4–15 seconds |
-| Output aspect ratio | Supports a wide range of aspect ratios, including but not limited to 21:9, 16:9, 4:3, 1:1, 3:4, and 9:16 |
-| Output resolution | Supports various resolution dimensions. The shorter side is set to 768 pixels by default. 2K \| generation can be achieved with H3-Regenerate-2K |
-| Output frame rate | 24 FPS |
-| Output audio | 32 kHz stereo |
-| Supported dialogue languages | Stable support for 11 languages: Arabic, Chinese, English, French, German, Italian, Japanese, Korean, Portuguese, Russian, and Spanish. Additional languages are also supported to varying degrees |
+| 出力時間 | 4-15 秒 |
+| 出力アスペクト比 | 21:9、16:9、4:3、1:1、3:4、9:16 など、幅広いアスペクト比をサポート |
+| 出力解像度 | さまざまな解像度をサポートします。デフォルトでは短辺が 768 ピクセルに設定されます。H3-Regenerate-2K により 2K 生成が可能です |
+| 出力フレームレート | 24 FPS |
+| 出力音声 | 32 kHz ステレオ |
+| 対応対話言語 | アラビア語、中国語、英語、フランス語、ドイツ語、イタリア語、日本語、韓国語、ポルトガル語、ロシア語、スペイン語の 11 言語を安定してサポートします。その他の言語も一定程度サポートされています |
 
-### Model Variants and Input Specifications
+### モデルバリアントと入力仕様
 
-| Model Variant | Input Mode | Specifications |
+| モデルバリアント | 入力モード | 仕様 |
 |---|---|---|
 | H3-Base-FL2VA | First-and-last-frame mode | Supports zero, one, or two input images. <br><br>- No image input: Text-to-video mode <br>- One image input: First-frame-to-video or last-frame-to-video generation <br>- Two image inputs: First-and-last-frame-to-video generation |
 | H3-Base-Ref2VA | Omni-reference mode | Supports multi-modal reference inputs: <br><br>- **Images:** ≤ 9 images <br>- **Videos:** ≤ 3 clips; each clip must be 2–15 seconds long; total duration ≤ 15 seconds <br>- **Audio:** ≤ 3 clips; audio must be accompanied by image or video input and cannot be used as the sole input; each clip must be 2–15 seconds long; total duration ≤ 15 seconds <br>- **Mixed inputs:** Maximum number of files across all input types is 12 |
 
 ![Image](assets/overview.png)
 
-The complete H3 system consists of the following three modules:
+完全な H3 システムは以下の 3 つのモジュールで構成されます:
 - H3-Context-IR: As inputs become increasingly complex, we build a dedicated system to deeply understand and refine the input multimodal instructions, then convert them into a form that H3 can readily understand—the Context Intermediate Representation—for generation. **H3-Context-IR is critical to the quality of the final output, so we strongly recommend incorporating it into your generation pipeline or following the “Prompting Guidance” to build your own context-processing system.**
 - H3-Base: Generates audio and video based on the H3-Context-IR output, producing results at 768p resolution.
 - H3-Regenerate-2K: Feeds the 768p result together with the original context back into H3 to regenerate the output at 2K resolution. This process leverages both H3’s powerful generative capabilities and the rich information contained in the original context, enabling it to produce high-resolution outputs with more accurate details and greater visual fidelity.
 
-## Model Architecture
+## モデルアーキテクチャ
 
 ### H3\-Context\-IR
 
-H3\-Context\-IR is a hosted preprocessing and orchestration system designed for free\-form multimodal inputs\.
+H3\-Context\-IR は、自由形式のマルチモーダル入力向けに設計されたホスト型の前処理およびオーケストレーションシステムです。
 
-It interprets the relationships among text, images, audio, and reference videos, as well as how these materials relate to the intended generation output\. Its internal workflow includes instruction parsing, cross\-modal association, temporal understanding, and complex logical reasoning\.
+テキスト、画像、音声、参照動画の関係、およびそれらの素材が目的の生成出力とどのように関係するかを解釈します。内部ワークフローには、指示解析、クロスモーダル関連付け、時間理解、複雑な論理推論が含まれます。
 
-H3\-Context\-IR serializes its understanding of the context into a structured representation accepted by H3\-Base\. Without deviating from the user’s original intent, it may also supplement missing or underspecified semantic details where appropriate\.
+H3\-Context\-IR は、コンテキストの理解を H3\-Base が受け取れる構造化表現にシリアライズします。ユーザーの元の意図から逸脱しない範囲で、不足している、または指定が不十分な意味情報を適宜補完することもあります。
 
-Because H3\-Context\-IR relies on a multi\-stage workflow and multiple hosted models and services, it is not included in this open\-source release\. We provide an API that enables users to reproduce the behavior of the official workflow\. We also provide detailed tutorials, and developers can follow the **Prompting Guidance** to build their own preprocessing systems\.
+H3\-Context\-IR は多段階ワークフローと複数のホスト型モデルおよびサービスに依存するため、今回のオープンソースリリースには含まれていません。公式ワークフローの挙動を再現できる API を提供しています。また、開発者が **プロンプトガイド** に従って独自の前処理システムを構築できるよう、詳細なチュートリアルも提供しています。
 
-For detailed usage instructions, see **Recommended Workflow — Full 2K Workflow**\.
+詳しい使用方法は **推奨ワークフロー - 完全な 2K ワークフロー** を参照してください。
 
-**Safety Guardrails**
+**安全ガードレール**
 
-User\-submitted text, images and videos, as well as enhanced prompts, are subject to automated moderation\. Content suspected of being unlawful, pornographic, or infringing third\-party rights may be blocked\. We use industry\-standard filtering measures but cannot eliminate false positives or false negatives\. These guardrails do not affect the Licensee’s obligations under the MiniMax H3 Community License, especially those relating to lawful use and use restrictions\.
+ユーザーが送信したテキスト、画像、動画、および拡張プロンプトは自動モデレーションの対象です。違法、ポルノ、または第三者の権利侵害が疑われるコンテンツはブロックされる場合があります。業界標準のフィルタリング手段を使用していますが、誤検知や見逃しを完全に排除することはできません。これらのガードレールは、MiniMax H3 Community License に基づくライセンシーの義務、特に合法的使用および使用制限に関する義務に影響しません。
 
 ### H3\-Base
 
 ![Image](assets/full-arch.png)
 
-#### Architecture Overview
+#### アーキテクチャ概要
 
 - H3\-Base encodes different modalities using their corresponding encoders or VAEs and organizes the encoded representations into a unified packed multimodal sequence\. RoPE is used to capture the necessary spatial and temporal relationships among tokens before the entire sequence is passed to the H3\-Omni\-Transformer\.
 
@@ -127,7 +127,7 @@ User\-submitted text, images and videos, as well as enhanced prompts, are subjec
 
 #### H3\-VAE
 
-H3 uses separate visual and audio latents to represent their respective modalities\.
+H3 は、それぞれのモダリティを表現するために、視覚 latent と音声 latent を分離して使用します。
 
 ##### H3\-VisualVAE
 
@@ -167,26 +167,26 @@ H3 uses separate visual and audio latents to represent their respective modaliti
 
 
 
-## Recommended Workflow
+## 推奨ワークフロー
 
-To help the community deploy MiniMax H3 correctly, we provide two validation methods\.
+コミュニティが MiniMax H3 を正しくデプロイできるよう、2 つの検証方法を提供しています。
 
-Since the complete H3 system consists of three modules—H3\-Context\-IR, H3\-Base, and H3\-Regenerate\-2K—the “Full 2K Workflow” provides an end\-to\-end validation pipeline for 2K output, combining the Open Platform API with a locally deployed H3\-Base\. The “Local Deployment of H3\-Base” section provides a method for validating 768p output using only a locally deployed H3\-Base\.
+完全な H3 システムは H3\-Context\-IR、H3\-Base、H3\-Regenerate\-2K の 3 つのモジュールで構成されるため、「完全な 2K ワークフロー」では Open Platform API とローカルにデプロイした H3\-Base を組み合わせ、2K 出力を検証するエンドツーエンドのパイプラインを提供します。「H3\-Base のローカルデプロイ」セクションでは、ローカルにデプロイした H3\-Base のみを使用して 768p 出力を検証する方法を提供します。
 
-In addition, the “Prompting Guidance” section provides a detailed tutorial to help the community develop their own prompting systems\.
+さらに、「プロンプトガイド」セクションでは、コミュニティが独自のプロンプトシステムを開発するための詳細なチュートリアルを提供します。
 
-### Local Deployment of H3\-Base
+### H3\-Base のローカルデプロイ
 
-MiniMax H3 is released as two task\-specific checkpoints\. Each checkpoint contains a specialized Omni Transformer Model together with the required processor, tokenizer, text encoder, Visual VAE, and standalone Audio VAE components\.
+MiniMax H3 は 2 つのタスク別 checkpoint として公開されています。各 checkpoint には、専用の Omni Transformer Model と、必要な processor、tokenizer、text encoder、Visual VAE、スタンドアロン Audio VAE コンポーネントが含まれます。
 
 |Checkpoint|Supported Tasks|Input Conditions|Output|Precision|
 |---|---|---|---|---|
 |MiniMax\-H3 Base FL2VA|Text\-to\-Audio\-Video \(`t2va`\), First/Last\-Frame\-to\-Audio\-Video \(`fl2va`\)|Text; optional first frame, last frame, or both|Video and audio|BF16|
 |MiniMax\-H3 Base Ref2VA|Reference\-to\-Audio\-Video \(`ref2va`\)|Text with reference images, videos, and/or audio|Video and audio|BF16|
 
-The released checkpoints are CFG-distilled Omni Transformer model weights. 
+公開されている checkpoint は、CFG 蒸留された Omni Transformer モデル重みです。 
 
-Each checkpoint is distributed as a self\-contained Hugging Face\-style repository with the following components:
+各 checkpoint は、以下のコンポーネントを含む自己完結型の Hugging Face 形式リポジトリとして配布されます:
 
 ```text
 <TASK>/
@@ -199,9 +199,9 @@ Each checkpoint is distributed as a self\-contained Hugging Face\-style reposito
 └── audio_vae/
 ```
 
-Download the model. The repository hosts the original checkpoint (`FL2VA/`, `Ref2VA/`) and the diffusers format side by side, so scope the download to what your framework needs:
+モデルをダウンロードします。このリポジトリでは元の checkpoint（`FL2VA/`、`Ref2VA/`）と diffusers 形式を並行して提供しているため、使用するフレームワークに必要な範囲だけをダウンロードしてください:
 
-`model_index.json` is the repository-level public entry. The task-family-specific diffusers indexes remain under `FL2VA/model_index.json` and `Ref2VA/model_index.json`.
+`model_index.json` はリポジトリレベルの公開エントリです。タスクファミリー別の diffusers インデックスは `FL2VA/model_index.json` および `Ref2VA/model_index.json` 配下にあります。
 
 ```bash
 # Original checkpoint, both task families (SGLang, vLLM):
@@ -211,9 +211,9 @@ hf download MiniMaxAI/MiniMax-H3 --include "model_index.json" "FL2VA/*" "Ref2VA/
 hf download MiniMaxAI/MiniMax-H3 --include "model_index.json" "FL2VA/*" --local-dir MiniMax-H3
 ```
 
-diffusers users do not need a manual download: `ModularPipeline.from_pretrained("MiniMaxAI/MiniMax-H3")` fetches exactly the components it needs. See the [diffusers documentation](https://github.com/huggingface/diffusers/blob/minimax-h3/docs/source/en/api/pipelines/minimax_h3.md) for loading recipes.
+diffusers ユーザーは手動でダウンロードする必要はありません。`ModularPipeline.from_pretrained("MiniMaxAI/MiniMax-H3")` が必要なコンポーネントだけを取得します。読み込み方法は [diffusers documentation](https://github.com/huggingface/diffusers/blob/minimax-h3/docs/source/en/api/pipelines/minimax_h3.md) を参照してください。
 
-We recommend the following inference frameworks to serve the model:
+モデルのサービングには以下の推論フレームワークを推奨します:
 
 - [SGLang](https://docs.sglang.io/) \- see [cookbook](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3) 
 
@@ -223,9 +223,9 @@ We recommend the following inference frameworks to serve the model:
 
 - [ComfyUI](https://github.com/Comfy-Org/ComfyUI) \- see  [Comfy tutorial](https://docs.comfy.org/tutorials/video/minimax/minimax-h3); use [R2V template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_r2v.json) / [T2V template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_t2v.json)
 
-#### Sglang Deployment
+#### Sglang デプロイ
 
-Here we use sglang as a deployment example\. See the [MiniMax\-H3 deployment guide](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3#3-serve-minimax-h3) for additional deployment configurations\.
+ここでは sglang をデプロイ例として使用します。追加のデプロイ設定については [MiniMax\-H3 deployment guide](https://docs.sglang.io/cookbook/diffusion/MiniMax/MiniMax-H3#3-serve-minimax-h3) を参照してください。
 
 FL2VA:
 
@@ -253,20 +253,20 @@ sglang serve \
   --model-variant ref2va
 ```
 
-#### Reproducible 768p cases
+#### 再現可能な 768p ケース
 
-The following three use cases T2VA, FL2VA, and Ref2VA demonstrate how to reproduce MiniMax\-H3 video\-audio generation\.
+以下の 3 つのユースケース T2VA、FL2VA、Ref2VA は、MiniMax\-H3 の動画・音声生成を再現する方法を示しています。
 
-| Use case | Request | Result |
+| ユースケース | リクエスト | 結果 |
 |---|---|---|
-| T2VA | [View script](scripts/readme/reproducible-768p-t2va-request.sh) | [t2va.mp4](assets/t2va.mp4) |
-| FL2VA | [View script](scripts/readme/reproducible-768p-fl2va-request.sh) | [fl2va.mp4](assets/fl2va.mp4) |
-| Ref2VA | [View script](scripts/readme/reproducible-768p-ref2va-request.sh) | [ref2va.mp4](assets/ref2va.mp4) |
+| T2VA | [スクリプトを見る](scripts/readme/reproducible-768p-t2va-request.sh) | [t2va.mp4](assets/t2va.mp4) |
+| FL2VA | [スクリプトを見る](scripts/readme/reproducible-768p-fl2va-request.sh) | [fl2va.mp4](assets/fl2va.mp4) |
+| Ref2VA | [スクリプトを見る](scripts/readme/reproducible-768p-ref2va-request.sh) | [ref2va.mp4](assets/ref2va.mp4) |
 
-### Full 2K\-Workflow
+### 完全な 2K ワークフロー
 
-This section explains how to combine a locally deployed SGLang service with the official **H3\-Context\-IR** and **H3\-Regenerate\-2K** APIs to reproduce the quality of 2K videos generated directly by the MiniMax API\.
-Before you begin, configure the SGLang endpoint and your MiniMax API credentials:
+このセクションでは、ローカルにデプロイした SGLang サービスと公式の **H3\-Context\-IR** および **H3\-Regenerate\-2K** API を組み合わせ、MiniMax API で直接生成した 2K 動画の品質を再現する方法を説明します。
+開始前に、SGLang エンドポイントと MiniMax API 認証情報を設定してください:
 
 ```bash
 # URL of your SGLang deployment
@@ -282,30 +282,30 @@ MINIMAX_API_BASE="https://api.minimaxi.com"
 TOKEN="<token>"
 ```
 
-MiniMax platform:
+MiniMax プラットフォーム:
 
-API docs:
+API ドキュメント:
 - Create H3-2K: use /video-generation-v2-create [EN-docs](https://platform.minimax.io/docs/api-reference/video-generation-v2-create), [CN-docs](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create)
 - H3-Context-IR：use /video-generation-v2-h3-context-ir [EN-docs](https://platform.minimax.io/docs/api-reference/video-generation-v2-h3-context-ir), [CN-docs](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-h3-context-ir)
 - H3-Regenerate-2K：use /video-generation-v2-regeneration [EN-docs](https://platform.minimax.io/docs/api-reference/video-generation-v2-regeneration), [CN-docs](https://platform.minimaxi.com/docs/api-reference/video-generation-v2-regeneration)
 
 
-The examples below encode local H3\-Base output files as Base64 Data URLs\. For production use, uploading the video to a publicly accessible URL and passing that URL as `base_video` is recommended\.
+以下の例では、ローカルの H3\-Base 出力ファイルを Base64 Data URL としてエンコードします。本番環境では、動画を公開アクセス可能な URL にアップロードし、その URL を `base_video` として渡すことを推奨します。
 
-For each case below, we provide reference outputs at both 2K and 768p generated directly through the Open Platform API, making it easier to validate the results\.
+以下の各ケースでは、Open Platform API から直接生成した 2K および 768p の参照出力を提供しており、結果を検証しやすくしています。
 
 #### case\-T2VA
 
-- Type: Text-to-video
-- Duration: 10 seconds
-- Aspect ratio: 16:9
+- 種類: テキストから動画
+- 長さ: 10 秒
+- アスペクト比: 16:9
 
 <table>
   <thead>
-    <tr><th>stage</th><th>request</th><th>result</th></tr>
+    <tr><th>段階</th><th>リクエスト</th><th>結果</th></tr>
   </thead>
   <tbody>
-    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-t2va-h3-context-ir.sh">View script</a></td><td><pre><code class="language-json">{
+    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-t2va-h3-context-ir.sh">スクリプトを見る</a></td><td><pre><code class="language-json">{
   &quot;task&quot;: {
     &quot;id&quot;: &quot;&lt;task_id&gt;&quot;,
     &quot;model&quot;: &quot;MiniMax-H3&quot;,
@@ -326,25 +326,25 @@ For each case below, we provide reference outputs at both 2K and 768p generated 
     &quot;modality&quot;: &quot;text&quot;
   }
 }</code></pre></td></tr>
-    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-t2va-h3-base.sh">View script</a></td><td><a href="assets/t2va.mp4">t2va.mp4</a></td></tr>
-    <tr><td>H3-Regenerate-2K</td><td><a href="scripts/readme/full-2k-t2va-h3-regenerate-2k.sh">View script</a></td><td><a href="assets/t2va_2k.mp4">t2va_2k.mp4</a></td></tr>
-    <tr><td>Reference 2K result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-t2va-reference-2k-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/h3_direct_2k.mp4">h3_direct_2k.mp4</a></td></tr>
-    <tr><td>Reference 768P result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-t2va-reference-768p-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/h3_direct_768p.mp4">h3_direct_768p.mp4</a><br></td></tr>
+    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-t2va-h3-base.sh">スクリプトを見る</a></td><td><a href="assets/t2va.mp4">t2va.mp4</a></td></tr>
+    <tr><td>H3-Regenerate-2K</td><td><a href="scripts/readme/full-2k-t2va-h3-regenerate-2k.sh">スクリプトを見る</a></td><td><a href="assets/t2va_2k.mp4">t2va_2k.mp4</a></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 2K 参照結果</td><td><a href="scripts/readme/full-2k-t2va-reference-2k-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/h3_direct_2k.mp4">h3_direct_2k.mp4</a></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 768P 参照結果</td><td><a href="scripts/readme/full-2k-t2va-reference-768p-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/h3_direct_768p.mp4">h3_direct_768p.mp4</a><br></td></tr>
   </tbody>
 </table>
 
 #### case\-I2VA
 
-- Type: First-frame image-to-video
-- Duration: 8 seconds
-- Aspect ratio: adaptive
+- 種類: 先頭フレーム画像から動画
+- 長さ: 8 秒
+- アスペクト比: 自動
 
 <table>
   <thead>
-    <tr><th>stage</th><th>request</th><th>result</th></tr>
+    <tr><th>段階</th><th>リクエスト</th><th>結果</th></tr>
   </thead>
   <tbody>
-    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-i2va-h3-context-ir.sh">View script</a></td><td><pre><code class="language-json">{
+    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-i2va-h3-context-ir.sh">スクリプトを見る</a></td><td><pre><code class="language-json">{
   &quot;task&quot;: {
     &quot;id&quot;: &quot;&lt;task_id&gt;&quot;,
     &quot;model&quot;: &quot;MiniMax-H3&quot;,
@@ -365,25 +365,25 @@ For each case below, we provide reference outputs at both 2K and 768p generated 
     &quot;modality&quot;: &quot;text&quot;
   }
 }</code></pre></td></tr>
-    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-i2va-h3-base.sh">View script</a></td><td><a href="assets/i2va.mp4">i2va.mp4</a></td></tr>
-    <tr><td>H3-Regenerate-2K</td><td><a href="scripts/readme/full-2k-i2va-h3-regenerate-2k.sh">View script</a></td><td><a href="assets/i2va_2k.mp4">i2va_2k.mp4</a><br></td></tr>
-    <tr><td>Reference 2K result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-i2va-reference-2k-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/i2va_direct_2k.mp4">i2va_direct_2k.mp4</a></td></tr>
-    <tr><td>Reference 768P result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-i2va-reference-768p-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/i2va_direct_768p.mp4">i2va_direct_768p.mp4</a></td></tr>
+    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-i2va-h3-base.sh">スクリプトを見る</a></td><td><a href="assets/i2va.mp4">i2va.mp4</a></td></tr>
+    <tr><td>H3-Regenerate-2K</td><td><a href="scripts/readme/full-2k-i2va-h3-regenerate-2k.sh">スクリプトを見る</a></td><td><a href="assets/i2va_2k.mp4">i2va_2k.mp4</a><br></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 2K 参照結果</td><td><a href="scripts/readme/full-2k-i2va-reference-2k-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/i2va_direct_2k.mp4">i2va_direct_2k.mp4</a></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 768P 参照結果</td><td><a href="scripts/readme/full-2k-i2va-reference-768p-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/i2va_direct_768p.mp4">i2va_direct_768p.mp4</a></td></tr>
   </tbody>
 </table>
 
 #### case\-Ref2VA
 
-- Type: Multimodal reference-to-video (video + audio)
-- Duration: 5 seconds
-- Aspect ratio: adaptive
+- 種類: マルチモーダル参照から動画（動画 + 音声）
+- 長さ: 5 秒
+- アスペクト比: 自動
 
 <table>
   <thead>
-    <tr><th>stage</th><th>request</th><th>result</th></tr>
+    <tr><th>段階</th><th>リクエスト</th><th>結果</th></tr>
   </thead>
   <tbody>
-    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-ref2va-h3-context-ir.sh">View script</a></td><td><pre><code class="language-json">{
+    <tr><td>H3-Context-IR</td><td><a href="scripts/readme/full-2k-ref2va-h3-context-ir.sh">スクリプトを見る</a></td><td><pre><code class="language-json">{
   &quot;task&quot;: {
     &quot;id&quot;: &quot;&lt;task_id&gt;&quot;,
     &quot;model&quot;: &quot;MiniMax-H3&quot;,
@@ -404,23 +404,23 @@ For each case below, we provide reference outputs at both 2K and 768p generated 
     &quot;modality&quot;: &quot;text&quot;
   }
 }</code></pre></td></tr>
-    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-ref2va-h3-base.sh">View script</a></td><td><a href="assets/r2va.mp4">r2va.mp4</a><br></td></tr>
-    <tr><td>Reference 2K result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-ref2va-reference-2k-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/r2va_2k.mp4">r2va_2k.mp4</a></td></tr>
-    <tr><td>H3 API 2K in Open Platform for reference</td><td><a href="scripts/readme/full-2k-ref2va-h3-api-2k-in-open-platform-for-reference.sh">View script</a></td><td><a href="assets/r2va_direct_2k.mp4">r2va_direct_2k.mp4</a><br></td></tr>
-    <tr><td>Reference 768P result by directly calling Open Platform API</td><td><a href="scripts/readme/full-2k-ref2va-reference-768p-result-by-directly-calling-open-platform-api.sh">View script</a></td><td><a href="assets/r2va_direct_768p.mp4">r2va_direct_768p.mp4</a><br></td></tr>
+    <tr><td>H3-Base</td><td><a href="scripts/readme/full-2k-ref2va-h3-base.sh">スクリプトを見る</a></td><td><a href="assets/r2va.mp4">r2va.mp4</a><br></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 2K 参照結果</td><td><a href="scripts/readme/full-2k-ref2va-reference-2k-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/r2va_2k.mp4">r2va_2k.mp4</a></td></tr>
+    <tr><td>参考用 Open Platform の H3 API 2K 結果</td><td><a href="scripts/readme/full-2k-ref2va-h3-api-2k-in-open-platform-for-reference.sh">スクリプトを見る</a></td><td><a href="assets/r2va_direct_2k.mp4">r2va_direct_2k.mp4</a><br></td></tr>
+    <tr><td>Open Platform API を直接呼び出した 768P 参照結果</td><td><a href="scripts/readme/full-2k-ref2va-reference-768p-result-by-directly-calling-open-platform-api.sh">スクリプトを見る</a></td><td><a href="assets/r2va_direct_768p.mp4">r2va_direct_768p.mp4</a><br></td></tr>
   </tbody>
 </table>
 
-### Prompting Guidance
+### プロンプトガイド
 
-Prompting guidance documents from the HuggingFace release are not copied into this repository to keep the markdown layout minimal.
+Markdown の構成を簡潔に保つため、Hugging Face リリースのプロンプトガイド文書はこのリポジトリにはコピーしていません。
 
 
 
-## License
+## ライセンス
 
-MiniMax H3 is released under the [MiniMax H3 Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE).
+MiniMax H3 は [MiniMax H3 Community License Agreement](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE) の下で公開されています。
 
-## Contact Us
+## お問い合わせ
 
-Contact us at [model@minimax.io](mailto:model@minimax.io).
+お問い合わせは [model@minimax.io](mailto:model@minimax.io) までお願いします。
