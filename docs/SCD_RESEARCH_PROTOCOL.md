@@ -117,5 +117,13 @@ Clips follow the naming convention `NAME_latents.safetensors` / `NAME_te.safeten
 `encode_clip.py` and `encode_text.py` to produce them. `.safetensors` is gitignored, so clips are
 local — the ledger records the clip *name*, which is what makes a run reproducible on the same set.
 
+`scripts/scd/clips/MANIFEST.tsv` maps each name to its source video and encoder settings, and
+`scripts/scd/clips/NAME.txt` is the prompt that produced `NAME_te.safetensors`. Both are checked in,
+so the set can be rebuilt from the corpus even though the tensors cannot be. Two things about the
+prompts are load-bearing rather than cosmetic: they are Context-IR (the three-field form H3 was
+trained on, not free-form captions — a caption is off-distribution in prompt space the same way
+σ=0.1 is off-distribution in noise space), and they describe only the first 29 pixel frames, which
+is the entire window the probe sees.
+
 Individual scripts still run standalone and write their own JSON; use them for one-off
 investigation, and the runner when the result is meant to count.

@@ -66,6 +66,36 @@ def check_lengths(tag, payload, keys, errs):
             errs.append(f"{tag}: {k} has {len(v)} entries, expected n_blocks={n}")
 
 
+def check_summary_fresh(path, p, errs):
+    """The summary is derived from the ledger, and nothing regenerates it when a row is appended.
+
+    A stale summary is the quiet failure this guards: claims cite it by flat key, so if a sweep adds
+    clips and the summary is not rebuilt, every claim still passes while the doc quotes an n that no
+    longer exists. Compared against the ledger rows sharing the summary's own configuration.
+    """
+    ledger = "docs/phase0_ledger.jsonl"
+    if not os.path.exists(ledger):
+        errs.append(f"{path}: summary present but no {ledger} to check it against")
+        return
+    cfg = p["config"]
+    keys = ("sigma_ref", "sigma_test", "latent_t", "base_quant", "checkpoint")
+    matching = []
+    for line in open(ledger):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        if all(r.get(k) == cfg.get(k) for k in keys) and r.get("loo_sigmas") == cfg.get("loo_sigmas"):
+            matching.append(r["clip"])
+
+    if len(matching) != p.get("n"):
+        errs.append(f"{path}: says n={p.get('n')} but {ledger} has {len(matching)} rows for that "
+                    "configuration — re-run `run_phase0.py --summarize-only`")
+    if sorted(matching) != sorted(p.get("clips", [])):
+        only_ledger = sorted(set(matching) - set(p.get("clips", [])))
+        errs.append(f"{path}: clip list disagrees with {ledger}; missing from summary: "
+                    f"{only_ledger[:5]} — re-run `run_phase0.py --summarize-only`")
+
+
 def check_result_files(errs, warns):
     seen = 0
     for path in sorted(glob.glob("docs/phase0_*.json")):
@@ -91,6 +121,13 @@ def check_result_files(errs, warns):
             sig = [p[k] for k in ("sigma_ref", "sigma_test") if k in p]
             check_config(path, p.get("latent_t"), sig, errs, warns)
             check_lengths(path, p, REQUIRED_VALIDATE, errs)
+        elif "verdict" in p and "config" in p:
+            missing = []
+            cfg = p["config"]
+            check_config(path, cfg.get("latent_t"),
+                         [cfg[k] for k in ("sigma_ref", "sigma_test") if k in cfg]
+                         + cfg.get("loo_sigmas", []), errs, warns)
+            check_summary_fresh(path, p, errs)
         else:
             continue
         seen += 1

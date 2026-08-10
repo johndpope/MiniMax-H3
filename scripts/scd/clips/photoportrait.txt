@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] Live-action, photographic, a shot begins as a tight close-up on a young woman's face against a plain mid-grey studio backdrop, lit by a soft key from the front left with no visible rim or background light. She has long dark hair falling loosely past her shoulders and wears a black off-shoulder top. The camera pulls out steadily with small amplitude at slow speed, opening the framing from a face-filling close-up to a head-and-shoulders portrait so that both bare shoulders and the neckline of the top enter the frame. Across the move her expression changes from parted lips and a level gaze into a closed-lip smile with the corners of the mouth raised, and her head rotates slightly to her right so that she ends facing the lens more squarely. Her hair settles against her shoulder as the move finishes and the backdrop stays featureless throughout.
+
+overall_soundscape: A close-miked studio interior with a very low noise floor and no room reverb. Hair and fabric shift faintly as she turns her head, and a soft breath passes near the end.
+
+non_diegetic_music: N/A

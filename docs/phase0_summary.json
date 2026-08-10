@@ -1,0 +1,40 @@
+{
+  "config": {
+    "sigma_ref": 0.5714285714285715,
+    "sigma_test": 0.9908256880733946,
+    "loo_sigmas": [
+      0.5714285714285715,
+      0.8372093023255813,
+      0.9230769230769231,
+      0.9655172413793103,
+      0.9908256880733946
+    ],
+    "latent_t": 7,
+    "base_quant": "nf4",
+    "checkpoint": "transformer"
+  },
+  "clips": [
+    "clip",
+    "isodiorama",
+    "isof1"
+  ],
+  "n": 3,
+  "verdict": "INSUFFICIENT",
+  "knee_text_mode": 30,
+  "knee_text_agree": 1.0,
+  "knee_video_mode": 29,
+  "knee_video_agree": 1.0,
+  "load_bearing_mode": [
+    0,
+    1,
+    48,
+    49
+  ],
+  "load_bearing_agree": 1.0,
+  "third_early": 0.08815373048137796,
+  "third_middle": 0.0022999070970099018,
+  "third_late": 0.038115475772137475,
+  "worst_causal_rel_l2": 0.12012883275747299,
+  "n_groups": 1,
+  "source": "docs/phase0_ledger.jsonl"
+}

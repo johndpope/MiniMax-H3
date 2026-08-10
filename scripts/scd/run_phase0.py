@@ -39,6 +39,7 @@ import phase0_validate as VA
 from phase0_probe import import_fizgig, load_latents, load_text
 
 LEDGER = "docs/phase0_ledger.jsonl"
+SUMMARY = "docs/phase0_summary.json"
 
 
 def git_sha():
@@ -63,7 +64,7 @@ def append(row, path=LEDGER):
         fh.write(json.dumps(row) + "\n")
 
 
-def summarize(path=LEDGER):
+def summarize(path=LEDGER, summary_json=SUMMARY):
     """Across-clip stability. n=1 is where every Phase 0 claim currently sits; this says when
     that stops being true, and flags disagreement rather than averaging it away."""
     if not os.path.exists(path):
@@ -79,6 +80,7 @@ def summarize(path=LEDGER):
                r["base_quant"], r["checkpoint"])
         groups.setdefault(key, []).append(r)
 
+    summaries = {}
     for key, g in groups.items():
         s_ref, s_test, loo_sig, lt, quant, ckpt = key
         print(f"--- {ckpt}  sigma {s_ref:.3f}->{s_test:.3f}  latent_t={lt}  {quant}  n={len(g)}")
@@ -95,14 +97,44 @@ def summarize(path=LEDGER):
         print(f"  worst causal-mask rel L2 over all clips/blocks: {causal:.4f}")
 
         if len(g) < 5:
+            verdict = "INSUFFICIENT"
             print("  VERDICT: n<5, not enough to call anything stable")
         elif len(kt) == 1 and len(kv) == 1 and len(lb) == 1:
+            verdict = "STABLE"
             print(f"  VERDICT: STABLE — knee {kt.most_common(1)[0][0]}, "
                   f"decoder must contain {lb.most_common(1)[0][0]}")
         else:
+            verdict = "UNSTABLE"
             print("  VERDICT: UNSTABLE across clips — the split is clip-dependent, do not "
                   "hardcode it in Phase 1")
         print()
+
+        summaries[key] = {
+            "config": {"sigma_ref": s_ref, "sigma_test": s_test, "loo_sigmas": list(loo_sig),
+                       "latent_t": lt, "base_quant": quant, "checkpoint": ckpt},
+            "clips": sorted(r["clip"] for r in g),
+            "n": len(g),
+            "verdict": verdict,
+            "knee_text_mode": kt.most_common(1)[0][0],
+            "knee_text_agree": kt.most_common(1)[0][1] / len(g),
+            "knee_video_mode": kv.most_common(1)[0][0],
+            "knee_video_agree": kv.most_common(1)[0][1] / len(g),
+            "load_bearing_mode": list(lb.most_common(1)[0][0]),
+            "load_bearing_agree": lb.most_common(1)[0][1] / len(g),
+            "third_early": thirds[0], "third_middle": thirds[1], "third_late": thirds[2],
+            "worst_causal_rel_l2": causal,
+        }
+
+    if summary_json:
+        # Flat keys at the top level, because docs/phase0_claims.json can only cite `{file, key}`
+        # on a flat JSON object and the ledger itself is JSONL. The group described is the one with
+        # the most clips: a claim should quote the best-supported configuration, and `config` below
+        # names which one that is so the choice can never be silent.
+        best = max(summaries.values(), key=lambda s: s["n"])
+        out = dict(best, n_groups=len(summaries), source=path)
+        with open(summary_json, "w") as fh:
+            json.dump(out, fh, indent=2)
+        print(f"wrote {summary_json} (largest group, n={best['n']} of {len(summaries)} groups)")
 
 
 def main():

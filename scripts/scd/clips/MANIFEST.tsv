@@ -1,0 +1,31 @@
+# Phase 0 clip set. The .safetensors are gitignored, so this file plus the .txt prompts is what
+# makes the set reconstructible — the ledger records only the clip NAME.
+#
+# Each row encodes to NAME_latents.safetensors (encode_clip.py, --latent-t 8 --size 512 512,
+# 29 pixel frames at 24 fps from --start 0) and NAME_te.safetensors (encode_text.py on NAME.txt).
+# The probe truncates to latent_t=7; the VAE is temporally causal, so the first 7 latent frames
+# are identical either way.
+#
+# Prompts are written to match the first 29 frames only, which is all the probe sees. They are
+# Context-IR, not the corpus's own .txt captions — those are short free-form generation prompts
+# and pairing one with the DiT would be off-distribution in prompt space.
+#
+# Selected for spread over camera motion (static / push / pull / arc / tracking), subject count
+# (0, 1, 2) and render style (2D pixel, pixel-rig on white, photoreal miniature, live-action).
+# The `untagged` corpus category is excluded deliberately.
+#
+# ROOT=/run/media/johndpope/2TB/lora-data/r2-scrya/93c3d582-8407-498a-a9a8-478e7fac08be
+#
+# name	source (relative to ROOT)	style	camera	subjects
+pixelgraph	pixelart/0f61f390-b6c6-4011-859c-0a536b69037e.mp4	2D pixel art	static	0
+pixelnews	pixelart/ec93af1d-6590-44b0-9bde-b4ae0eb5f66a.mp4	2D pixel art	static	1
+pixelloading	pixelart/6acf544a-5dfa-46fc-bd63-f585e9c837b6.mp4	2D pixel art	static	0
+isostreet	isometric_3d/49f4ee51-d8be-48cd-9e9c-0b2ae100b4ce.mp4	photoreal miniature	arc right	1
+isof1	isometric_3d/728a0cd4-18f7-412a-9d07-e8080b7071c3.mp4	photoreal miniature	tracking	0
+isogallery	isometric_3d/667caaf9-d5f0-4d88-8a13-8744534c09aa.mp4	photoreal miniature	arc right	2
+isodiorama	isometric_3d/30af3dcb-b080-411d-960a-959d29a23a7d.mp4	photoreal miniature	arc right	1
+rigsuit	pixelrig/f92e8c70-c714-4be3-8136-a78de503cfbb.mp4	pixel rig on flat bg	push in	1
+rigjump	pixelrig/608980a6-ba40-43ba-80e5-119859372a7d.mp4	pixel rig on white	static	1
+rigread	pixelrig/2d19a789-a3b1-4e58-91af-2e917d5af7a4.mp4	pixel rig on white	static	1
+photoportrait	realistic_photo/124cf1c7-e4f8-4fef-a219-b4b235050377.mp4	live-action	pull out	1
+photopoint	realistic_photo/44e9778a-e6f0-4b9a-9a38-b97ff69730a9.mp4	live-action	static	1

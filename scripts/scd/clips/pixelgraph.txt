@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a static shot holds a centered network diagram against a near-black navy field marked by a faint darker grid. Dozens of small circular nodes sit at regular lattice positions and are joined by thin straight edges; most nodes and edges are desaturated cyan, while a cluster toward the lower left is warm red and a diagonal chain running up through the centre is pale yellow. The camera position and focal length remain still throughout. Over the shot the yellow chain brightens from dim ochre to near-white and its edges thicken slightly, the red cluster gains saturation as two of its dashed edges resolve into solid lines, and several outlying cyan nodes along the lower edge fade up from the background. No node leaves its lattice position and the overall composition stays fixed.
+
+overall_soundscape: A low electronic room tone continues underneath with no ambient noise. Faint short clicks accompany each node as it brightens.
+
+non_diegetic_music: A sparse synthesizer arpeggio at a slow tempo over a sustained low drone, rising slightly in volume.

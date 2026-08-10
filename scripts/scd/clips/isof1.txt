@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] 3D CG, photorealistic miniature, a low tracking shot follows a red and white Formula One car from behind and slightly above as it runs down a sunlit straight. The car carries white lettering reading "Scrya.com" along the rear wing and again along the sidepod, with wide black tyres on yellow-rimmed wheels and a pale blue camera housing mounted on the airbox above the driver's helmet. Sharp red and white kerbing marks the track edge on both sides, green grass and a low barrier run beyond it, and a grandstand of blurred spectators sits along the top of the frame under hard midday sun. The camera tracks the car at fast speed, holding it centred and at a constant size while the painted lane markings streak beneath the floor and the background compresses into horizontal motion blur. The car holds its line without steering input and the rear wing stays level.
+
+overall_soundscape: A high-revving engine holds a sustained note close to the microphone with tyre roar and rushing air underneath. Distant crowd noise passes briefly through the mix.
+
+non_diegetic_music: N/A

@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a static side-on shot frames an adventurer character standing on a plain white background with no floor, horizon or shadow. He wears a brown wide-brimmed felt hat, a worn brown leather jacket over a pale shirt, light khaki trousers and dark boots, with a coiled item hanging at his left hip, all drawn in chunky pixels. The camera remains completely still at a fixed focal length and the character stays centred in the frame. He begins upright and facing left, then drops into a deep crouch: his knees bend forward, his hips sink toward his heels, his torso pitches down over his thighs and both arms swing back behind him. He holds near the bottom of the crouch and rocks slightly, with the coil at his hip swinging forward and settling back against his leg. His head stays turned to the left throughout.
+
+overall_soundscape: A silent white void with no room tone or ambience. Cloth and leather creak faintly as the crouch loads and the hanging coil taps once against his hip.
+
+non_diegetic_music: N/A

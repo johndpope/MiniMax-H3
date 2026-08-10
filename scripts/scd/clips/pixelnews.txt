@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a static medium shot frames a boxy dark-grey cathode-ray television standing on a low wooden cabinet against a plain beige wall, with a small potted green plant on the shelf beneath it. The screen shows a news broadcast: white pixel text reading "BREAKING NEWS" across the top with "ALIEN INVASION" in red beneath it, a male anchor in a dark navy suit, white shirt and red tie centred in frame, and a night city skyline behind him where several buildings burn and give off columns of dark smoke. A yellow ticker along the bottom of the screen reads "EARTH UNDER ATTACK" repeatedly and slides steadily to the left. The camera holds completely still while the anchor lifts both hands from the desk and spreads them outward, his eyebrows rising and his mouth opening wider. The anchor with a clipped, urgent mid-range voice (S1) says: <d>[English] Earth is under attack.</d>
+
+overall_soundscape: The muffled hum of a cathode-ray television fills a quiet carpeted room. A faint electrical buzz and the soft crackle of the small speaker continue underneath.
+
+non_diegetic_music: N/A

@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] Live-action, photographic, a static close-up frames a young woman against a plain mid-grey studio backdrop with a soft key light from the front left. She has long dark hair falling past her shoulders and wears a black off-shoulder top. She begins with a broad open smile showing her upper teeth and her gaze level on the lens. Her eyes then widen, her brows lift, and her mouth opens into a round shape as her chin drops and her head rocks back slightly from the waist. Her arm swings up from below the frame into the lower right of the shot with the index finger extended toward the lens in sharp foreshortening, so the hand reads much larger than her face and partly covers her shoulder. The camera holds still at a fixed focal length throughout. The young woman with a bright, high-pitched voice (S1) says: <d>[English] You need to listen!</d>
+
+overall_soundscape: A close-miked studio interior with a very low noise floor and no room reverb. A sharp intake of breath precedes the line and fabric shifts as her arm rises into frame.
+
+non_diegetic_music: N/A
