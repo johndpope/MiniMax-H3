@@ -28,15 +28,23 @@ jobs:
       # Guards the two configuration errors that produced false findings in Phase 0: an
       # off-distribution sigma grid, and a latent_t off the DiT's 5n+2 frame grid. Also verifies
       # every number registered in docs/phase0_claims.json against the result file it cites, so
-      # the design doc's prose cannot silently drift from the JSON when a probe is re-run.
+      # the design doc's prose cannot silently drift from the JSON when a probe is re-run. Since
+      # Phase 1 it also reads scd_model.py's split constants with `ast` and fails if the decoder
+      # stops containing the blocks the ledger measured as load-bearing — data -> code, the
+      # counterpart to the claims registry's data -> docs.
       - name: Validate recorded findings
         run: python3 scripts/scd/check_findings.py
 
       - name: Lint
         run: ruff check scripts/scd
 
-      # The probes import fizgig and torch, neither of which is available here, so a real import
-      # would fail for uninteresting reasons. Compiling catches syntax and indentation breakage,
-      # which is what actually goes wrong when these are edited without being run.
+      # The probes and the Phase 1 model import fizgig and torch, neither of which is available
+      # here (fizgig is a local source tree, not a package), so a real import would fail for
+      # uninteresting reasons. Compiling catches syntax and indentation breakage, which is what
+      # actually goes wrong when these are edited without being run.
+      #
+      # scripts/scd/test_scd_model.py therefore does NOT run here. It is CPU-only and finishes in
+      # ~1.2 s, so it is cheap to run locally, and the design doc records its result:
+      #     python3 scripts/scd/test_scd_model.py
       - name: Byte-compile probes
         run: python3 -m compileall -q scripts/scd

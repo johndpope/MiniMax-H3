@@ -440,6 +440,18 @@ How these measurements are made, and what has to be true before a finding is all
 - Unit tests: weight load, prefix parity, shared-init blocks are independent `nn.Module`s (they diverge under training and must not alias).
 - **No training yet.**
 
+**Skeleton landed (2026-08-11).** `scripts/scd/scd_model.py` + `scripts/scd/test_scd_model.py`, **9/9 in 1.2 s on CPU with no weights and no GPU** — the tests run a hidden-64 stand-in through the same code path, because composition, weight copying and aliasing are shape-independent and a test that needs the 62 GB checkpoint is a test nobody runs. `test_production_split` builds a 50-block model and applies the module's real defaults, so the split Phase 2 inherits is exercised rather than only a toy one.
+
+Three things worth carrying forward:
+
+- **The composition consumes the base.** Tail blocks past the prefix are *moved* into the decoder, not copied; only blocks the encoder still holds (0, 1) are deep-copied. A spare copy of five 5376-wide blocks does not fit beside the base on a 24 GB card, so §8's VRAM plan depends on this and `test_tail_blocks_are_moved_not_copied` pins it.
+- **`encode()` does not re-implement the base's preamble.** It captures the per-block arguments from the base's own first block through a forward hook. That preamble decides segment order, modulation rows, audio row count and RoPE positions; a second copy of it would drift from the real one the way Phase 0's transcribed numbers drifted from their JSON. There is deliberately no pixel-output path yet — the final layer needs `video_t_index`, which the preamble derives from a sorted-unique over distinct timesteps, and Phase 2's causal mask rewrites this graph anyway.
+- **Prefix parity failed first, for a real reason.** The base draws fresh `torch.randn` silence audio rows on every call when `audio_noise` is None, so two forwards with identical arguments pack different sequences and disagree by ~0.6. Any bit-exact comparison across two base calls has to pass audio rows explicitly.
+
+Both non-trivial invariants were mutation-tested rather than trusted for being green: removing the `deepcopy` fails only `test_shared_init_blocks_are_independent` — **`test_weight_parity` still passes on that mutant**, which is precisely why a `state_dict` comparison is not sufficient and `aliases()` compares `data_ptr` — and an off-by-one prefix fails `test_prefix_parity`.
+
+`check_findings.py` now also reads `scd_model.py`'s split constants with `ast` (no torch needed, so CI runs it) and errors if `DEFAULT_DECODER_SOURCE` stops containing the load-bearing set that `phase0_summary.json` reports, or warns if `DEFAULT_ENCODER_DEPTH` drifts from the measured text knee. That closes the last leg of the loop: data → docs was already checked by the claims registry, and this is data → code.
+
 ### Phase 2 — Causal mask + encoder KV (2–4 weeks)
 
 - Implement video frame spans + causal mask.  

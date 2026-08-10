@@ -25,6 +25,7 @@ Usage:
 """
 
 import argparse
+import ast
 import glob
 import json
 import os
@@ -221,6 +222,40 @@ def check_claims(errs):
     return len(claims)
 
 
+def check_split_matches_data(errs, warns):
+    """The Phase 1 decoder composition must still contain what Phase 0 measured as load-bearing.
+
+    `scd_model.py` hardcodes a split. The measurement that justifies it lives in the summary and
+    moves whenever the sweep is re-run, and nothing otherwise connects the two — the decoder could
+    quietly stop containing a block whose removal costs +96% loss. Read with `ast` rather than
+    imported, because CI has neither torch nor fizgig.
+    """
+    src, summary = "scripts/scd/scd_model.py", "docs/phase0_summary.json"
+    if not (os.path.exists(src) and os.path.exists(summary)):
+        return
+    consts = {}
+    for node in ast.parse(open(src).read()).body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            try:
+                consts[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                pass
+
+    p = json.load(open(summary))
+    load_bearing = set(p.get("load_bearing_mode") or [])
+    decoder = set(consts.get("DEFAULT_DECODER_SOURCE", ()))
+    missing = sorted(load_bearing - decoder)
+    if missing:
+        errs.append(f"{src}: DEFAULT_DECODER_SOURCE drops blocks {missing}, which {summary} "
+                    f"reports as load-bearing — the decoder must contain all of "
+                    f"{sorted(load_bearing)}")
+
+    depth, n = consts.get("DEFAULT_ENCODER_DEPTH"), p.get("knee_text_mode")
+    if depth is not None and n is not None and depth != n:
+        warns.append(f"{src}: DEFAULT_ENCODER_DEPTH={depth} but {summary} reports a text knee at "
+                     f"{n} — intentional only if the doc says why")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strict", action="store_true", help="treat warnings as failures")
@@ -233,6 +268,7 @@ def main():
     n_files = check_result_files(errs, warns)
     n_rows = check_ledger(errs, warns)
     n_claims = check_claims(errs)
+    check_split_matches_data(errs, warns)
     print(f"checked {n_files} result files, {n_rows} ledger rows, {n_claims} registered claims")
 
     for w in warns:
