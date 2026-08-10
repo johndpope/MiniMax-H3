@@ -1,0 +1,5 @@
+integrated_multimodal_description: [Shot 1] Live-action, photographic, a centered medium close-up frames a young woman against a plain dark grey studio backdrop with soft, even key light from the front left. She has long black hair falling past her shoulders and wears a black spaghetti-strap top. The camera is locked off at a fixed focal length with no push or pan. She faces the lens directly with a warm closed-lip smile, then raises her right hand from below frame up to shoulder height, palm open toward the camera and fingers spread, and waves twice with a small side-to-side rotation of the wrist. Her smile widens as the hand reaches its highest point and she says brightly: <d>[English] Hi, so good to see you.</d> Her shoulders stay square to the camera throughout and the hand remains in the right half of the frame.
+
+overall_soundscape: A quiet, close-miked studio interior with a low noise floor and no room reverb. The faint rustle of fabric accompanies the arm lifting, and a soft intake of breath precedes the greeting.
+
+non_diegetic_music: None.

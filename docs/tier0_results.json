@@ -1,0 +1,145 @@
+{
+  "device": "NVIDIA RTX PRO 4000 Blackwell",
+  "torch": "2.13.0+cu130",
+  "dtype": "bfloat16",
+  "linear_ms_per_token": 0.008348148490767926,
+  "results": [
+    {
+      "config": "512^2, T=4 (Phase 3 train)",
+      "rows": 256,
+      "frames": 4,
+      "seq": 1024,
+      "encoder_attn_source": "flex block-causal",
+      "ms": {
+        "dense_attn": 0.3652159869670868,
+        "encoder_attn": 0.2682879865169525,
+        "decoder_attn": 0.09270399808883667,
+        "linear_full": 8.548504054546356,
+        "linear_decoder": 4.274252027273178
+      },
+      "steps": {
+        "8": {
+          "stock_s": 3.5654880166053773,
+          "scd_s": 2.6665782151520254,
+          "speedup": 1.3371023570002816,
+          "flop_model_speedup": 1.335988968898422
+        },
+        "16": {
+          "stock_s": 7.130976033210755,
+          "scd_s": 5.042202292948962,
+          "speedup": 1.4142582187118402,
+          "flop_model_speedup": 1.4123973501352467
+        },
+        "30": {
+          "stock_s": 13.370580062270164,
+          "scd_s": 9.1995444290936,
+          "speedup": 1.4533958899079444,
+          "flop_model_speedup": 1.4511276193519185
+        }
+      }
+    },
+    {
+      "config": "768p, 5s",
+      "rows": 1008,
+      "frames": 31,
+      "seq": 31248,
+      "encoder_attn_source": "flex block-causal",
+      "ms": {
+        "dense_attn": 296.0851135253906,
+        "encoder_attn": 176.74429321289062,
+        "decoder_attn": 1.254304051399231,
+        "linear_full": 260.86294403951615,
+        "linear_decoder": 16.82986735738814
+      },
+      "steps": {
+        "8": {
+          "stock_s": 222.77922302596272,
+          "scd_s": 90.68390548877697,
+          "speedup": 2.456656689246074,
+          "flop_model_speedup": 2.5102932907695936
+        },
+        "16": {
+          "stock_s": 445.55844605192544,
+          "scd_s": 166.92677214822453,
+          "speedup": 2.6691850583217818,
+          "flop_model_speedup": 2.715935516155303
+        },
+        "30": {
+          "stock_s": 835.4220863473602,
+          "scd_s": 300.3517888022577,
+          "speedup": 2.78147864435519,
+          "flop_model_speedup": 2.823890439580171
+        }
+      }
+    },
+    {
+      "config": "768p, 10s",
+      "rows": 1008,
+      "frames": 61,
+      "seq": 61488,
+      "encoder_attn_source": "flex block-causal",
+      "ms": {
+        "dense_attn": 1142.3751220703125,
+        "encoder_attn": 665.033935546875,
+        "decoder_attn": 1.281599998474121,
+        "linear_full": 513.3109544003382,
+        "linear_decoder": 16.82986735738814
+      },
+      "steps": {
+        "8": {
+          "stock_s": 662.2744305882603,
+          "scd_s": 189.13811455249134,
+          "speedup": 3.501538715003209,
+          "flop_model_speedup": 3.6211555341376522
+        },
+        "16": {
+          "stock_s": 1324.5488611765206,
+          "scd_s": 339.39084773672465,
+          "speedup": 3.902724160092884,
+          "flop_model_speedup": 4.011936655638926
+        },
+        "30": {
+          "stock_s": 2483.529114705976,
+          "scd_s": 602.333130809133,
+          "speedup": 4.123181986303449,
+          "flop_model_speedup": 4.224695998586413
+        }
+      }
+    },
+    {
+      "config": "768p, 15s",
+      "rows": 1008,
+      "frames": 91,
+      "seq": 91728,
+      "encoder_attn_source": "flex block-causal",
+      "ms": {
+        "dense_attn": 2508.016845703125,
+        "encoder_attn": 1393.0531005859375,
+        "decoder_attn": 1.309056043624878,
+        "linear_full": 765.7589647611603,
+        "linear_decoder": 16.82986735738814
+      },
+      "steps": {
+        "8": {
+          "stock_s": 1309.5103241857141,
+          "scd_s": 295.7281141673913,
+          "speedup": 4.42808871206777,
+          "flop_model_speedup": 4.623974587788385
+        },
+        "16": {
+          "stock_s": 2619.0206483714283,
+          "scd_s": 520.2154301783285,
+          "speedup": 5.034492436092553,
+          "flop_model_speedup": 5.236563227236062
+        },
+        "30": {
+          "stock_s": 4910.663715696428,
+          "scd_s": 913.0682331974683,
+          "speedup": 5.378200157615607,
+          "flop_model_speedup": 5.581645399490853
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-08-10T17:01:18"
+}
