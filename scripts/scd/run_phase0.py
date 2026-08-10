@@ -41,6 +41,15 @@ from phase0_probe import import_fizgig, load_latents, load_text
 LEDGER = "docs/phase0_ledger.jsonl"
 SUMMARY = "docs/phase0_summary.json"
 
+# `knee(curve, frac)` is "first block below `frac` of the plateau", and `frac` went unaudited until
+# it was swept: the text knee holds at 29-31 across this grid, the video knee slides 30->25. A knee
+# that moves with the threshold is describing the threshold, not a plateau. So the sweep is reported
+# beside every knee rather than left as something someone has to think to check.
+# The grid stops at 0.95 on purpose: at 0.99 the test fires on the first block not within 1% of the
+# max, which is a test for "is this the argmax", not for departure from a plateau.
+FRAC_GRID = (0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
+FRAC_SPREAD_OK = 3
+
 
 def git_sha():
     try:
@@ -74,16 +83,21 @@ def summarize(path=LEDGER, summary_json=SUMMARY):
 
     # Runs are only comparable within one configuration. Grouping by it rather than pooling is the
     # whole point: the off-distribution sigma run and the on-distribution one must never be mixed.
+    # Spatial geometry is part of the configuration, not a detail: latent_t alone does not pin the
+    # sequence length, so without latent_hw a 640-wide run would pool silently with a 512-wide one.
+    # Rows written before that field existed report "legacy" rather than being assumed 512x512.
     groups = {}
     for r in rows:
         key = (r["sigma_ref"], r["sigma_test"], tuple(r["loo_sigmas"]), r["latent_t"],
-               r["base_quant"], r["checkpoint"])
+               tuple(r.get("latent_hw") or ("legacy",)), r["base_quant"], r["checkpoint"])
         groups.setdefault(key, []).append(r)
 
     summaries = {}
     for key, g in groups.items():
-        s_ref, s_test, loo_sig, lt, quant, ckpt = key
-        print(f"--- {ckpt}  sigma {s_ref:.3f}->{s_test:.3f}  latent_t={lt}  {quant}  n={len(g)}")
+        s_ref, s_test, loo_sig, lt, hw, quant, ckpt = key
+        geom = "x".join(str(v) for v in hw)
+        print(f"--- {ckpt}  sigma {s_ref:.3f}->{s_test:.3f}  latent_t={lt}  latent_hw={geom}  "
+              f"{quant}  n={len(g)}")
         kt = Counter(r["knee_text"] for r in g)
         kv = Counter(r["knee_video"] for r in g)
         print(f"  knee text  {dict(sorted(kt.items()))}")
@@ -95,6 +109,15 @@ def summarize(path=LEDGER, summary_json=SUMMARY):
               f"late {thirds[2]:.4f}")
         causal = max(max(r["causal_rel_l2"]) for r in g)
         print(f"  worst causal-mask rel L2 over all clips/blocks: {causal:.4f}")
+
+        kt_frac = [Counter(VA.knee(r["sigma_centered_cos_text"], f) for r in g).most_common(1)[0][0]
+                   for f in FRAC_GRID]
+        kv_frac = [Counter(VA.knee(r["sigma_centered_cos_video"], f) for r in g).most_common(1)[0][0]
+                   for f in FRAC_GRID]
+        print(f"  knee vs frac {FRAC_GRID}\n    text  {kt_frac}\n    video {kv_frac}")
+        if max(kv_frac) - min(kv_frac) > FRAC_SPREAD_OK:
+            print(f"  NOTE: video knee moves {max(kv_frac) - min(kv_frac)} blocks across the frac "
+                  "grid — that curve has no plateau, so its knee is a property of the threshold")
 
         if len(g) < 5:
             verdict = "INSUFFICIENT"
@@ -111,10 +134,16 @@ def summarize(path=LEDGER, summary_json=SUMMARY):
 
         summaries[key] = {
             "config": {"sigma_ref": s_ref, "sigma_test": s_test, "loo_sigmas": list(loo_sig),
-                       "latent_t": lt, "base_quant": quant, "checkpoint": ckpt},
+                       "latent_t": lt, "latent_hw": list(hw), "base_quant": quant,
+                       "checkpoint": ckpt},
             "clips": sorted(r["clip"] for r in g),
             "n": len(g),
             "verdict": verdict,
+            "knee_frac_grid": list(FRAC_GRID),
+            "knee_text_by_frac": kt_frac,
+            "knee_video_by_frac": kv_frac,
+            "knee_text_frac_spread": max(kt_frac) - min(kt_frac),
+            "knee_video_frac_spread": max(kv_frac) - min(kv_frac),
             "knee_text_mode": kt.most_common(1)[0][0],
             "knee_text_agree": kt.most_common(1)[0][1] / len(g),
             "knee_video_mode": kv.most_common(1)[0][0],
@@ -191,6 +220,7 @@ def main():
             "clip": name, "git_sha": sha, "checkpoint": ckpt,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "latent_t": args.latent_t, "base_quant": args.base_quant,
+            "latent_hw": list(video_latent.shape[-2:]),
             "seq_len": va["seq_len"], "n_blocks": va["n_blocks"],
             "sigma_ref": sigma_ref, "sigma_test": sigma_test,
             "loo_sigmas": [] if args.skip_leaveout else loo_sigmas,

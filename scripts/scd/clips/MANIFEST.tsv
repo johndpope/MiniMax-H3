@@ -29,3 +29,10 @@ rigjump	pixelrig/608980a6-ba40-43ba-80e5-119859372a7d.mp4	pixel rig on white	sta
 rigread	pixelrig/2d19a789-a3b1-4e58-91af-2e917d5af7a4.mp4	pixel rig on white	static	1
 photoportrait	realistic_photo/124cf1c7-e4f8-4fef-a219-b4b235050377.mp4	live-action	pull out	1
 photopoint	realistic_photo/44e9778a-e6f0-4b9a-9a38-b97ff69730a9.mp4	live-action	static	1
+#
+# Geometry control. Same source, same 29-frame window, same prompt as `isodiorama` — only --size
+# differs (640 640, so 40x40 latent and 2800 video tokens against 512's 32x32 and 1792). The first
+# three ledger rows all sat at 512x512 latent_t=7, so their agreement was measured over content
+# while geometry stayed fixed; this row is the one that varies geometry instead. Its _te file is a
+# byte copy of isodiorama's, which is the point: the text side must not move.
+isodiorama640	isometric_3d/30af3dcb-b080-411d-960a-959d29a23a7d.mp4	photoreal miniature	arc right	1

@@ -79,12 +79,17 @@ def check_summary_fresh(path, p, errs):
         return
     cfg = p["config"]
     keys = ("sigma_ref", "sigma_test", "latent_t", "base_quant", "checkpoint")
+    # latent_hw is compared through the same "legacy" placeholder summarize() groups by, so rows
+    # written before the field existed keep matching the summary they produced.
+    hw = cfg.get("latent_hw") or ["legacy"]
     matching = []
     for line in open(ledger):
         if not line.strip():
             continue
         r = json.loads(line)
-        if all(r.get(k) == cfg.get(k) for k in keys) and r.get("loo_sigmas") == cfg.get("loo_sigmas"):
+        if (all(r.get(k) == cfg.get(k) for k in keys)
+                and r.get("loo_sigmas") == cfg.get("loo_sigmas")
+                and (r.get("latent_hw") or ["legacy"]) == hw):
             matching.append(r["clip"])
 
     if len(matching) != p.get("n"):
@@ -157,6 +162,26 @@ def check_ledger(errs, warns):
     return rows
 
 
+def load_claim_source(c, errs):
+    """The object a claim reads its key from — a flat JSON file, or one row of the ledger.
+
+    Only the largest configuration group reaches phase0_summary.json, so a number belonging to any
+    other group (a geometry control, say) has nowhere flat to live. Rather than widen the summary
+    until every group is in it, a claim may name a ledger row by `row: {field: value}`; the ledger
+    is the primary record anyway, and this makes it quotable without copying numbers out of it.
+    """
+    src = c["file"]
+    if "row" not in c:
+        return json.load(open(src))
+    match = [r for r in (json.loads(ln) for ln in open(src) if ln.strip())
+             if all(r.get(k) == v for k, v in c["row"].items())]
+    if len(match) != 1:
+        errs.append(f"claim {c['id']!r}: row selector {c['row']} matches {len(match)} rows in "
+                    f"{src}, expected exactly 1")
+        return None
+    return match[0]
+
+
 def check_claims(errs):
     """Every number the design doc leans on, checked against the file it came from."""
     path = "docs/phase0_claims.json"
@@ -168,7 +193,10 @@ def check_claims(errs):
         if not os.path.exists(src):
             errs.append(f"claim {c['id']!r}: source {src} does not exist")
             continue
-        v = json.load(open(src)).get(c["key"])
+        payload = load_claim_source(c, errs)
+        if payload is None:
+            continue
+        v = payload.get(c["key"])
         if v is None:
             errs.append(f"claim {c['id']!r}: {src} has no key {c['key']!r}")
             continue

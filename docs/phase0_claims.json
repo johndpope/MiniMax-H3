@@ -190,5 +190,98 @@
     "index": 2,
     "expected": 0.0471,
     "tol": 0.001
+  },
+  {
+    "id": "knee-text-frac-spread",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_text_frac_spread",
+    "expected": 2,
+    "tol": 0
+  },
+  {
+    "id": "knee-video-frac-spread",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_video_frac_spread",
+    "expected": 5,
+    "tol": 0
+  },
+  {
+    "id": "knee-text-frac-070",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_text_by_frac",
+    "index": 0,
+    "expected": 31,
+    "tol": 0
+  },
+  {
+    "id": "knee-text-frac-095",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_text_by_frac",
+    "index": 5,
+    "expected": 29,
+    "tol": 0
+  },
+  {
+    "id": "knee-video-frac-070",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_video_by_frac",
+    "index": 0,
+    "expected": 30,
+    "tol": 0
+  },
+  {
+    "id": "knee-video-frac-095",
+    "file": "docs/phase0_summary.json",
+    "key": "knee_video_by_frac",
+    "index": 5,
+    "expected": 25,
+    "tol": 0
+  },
+  {
+    "id": "ledger-n",
+    "file": "docs/phase0_summary.json",
+    "key": "n",
+    "expected": 3,
+    "tol": 0
+  },
+  {
+    "id": "geom640-seq-len",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama640"
+    },
+    "key": "seq_len",
+    "expected": 3142,
+    "tol": 0
+  },
+  {
+    "id": "geom512-seq-len",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama"
+    },
+    "key": "seq_len",
+    "expected": 2134,
+    "tol": 0
+  },
+  {
+    "id": "geom640-knee-text",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama640"
+    },
+    "key": "knee_text",
+    "expected": 30,
+    "tol": 0
+  },
+  {
+    "id": "geom640-knee-video",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama640"
+    },
+    "key": "knee_video",
+    "expected": 29,
+    "tol": 0
   }
 ]

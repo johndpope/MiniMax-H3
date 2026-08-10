@@ -84,13 +84,35 @@ verifies each against the file it cites. CI runs this on every push touching `do
 If a re-run legitimately changes a number, update the claim in the same commit as the prose. A
 failing claim check means the doc and the data disagree — it does not mean the tolerance is wrong.
 
+Only the largest configuration group reaches `phase0_summary.json`, so a number from any other
+group has no flat file to be cited from. Such a claim names a ledger row instead —
+`{file: docs/phase0_ledger.jsonl, row: {clip: NAME}, key: seq_len}` — and the check fails unless the
+selector matches exactly one row. Prefer this to widening the summary: the ledger is the record, and
+copying numbers out of it is the drift this rule exists to prevent.
+
 ### 6. Superseded code keeps a header, and keeps working
 
 `phase0_probe.py` opens with a `SUPERSEDED BY` block naming what replaced it and why. Deleting it
 would erase the evidence for why the metric changed. Do not silently fix a superseded script's
 numbers either — its output is the record of the mistake.
 
-### 7. Distinguish "the frozen base does not do this" from "this cannot work"
+### 7. A free parameter inside the estimator is swept, or it is not a result
+
+`knee(curve, frac=0.85)` reports "first block below `frac` of the plateau". `frac` was picked once,
+never swept, and quoted for months as if it were not there. Sweeping it over 0.70–0.95 moves the
+text knee 2 blocks and the video knee 5, monotonically — so the video knee was a restatement of the
+threshold, and §7 had been reading it as independent corroboration of the text knee.
+
+This is a different failure from rules 1 and 2. There the *measurement* was off; here the
+measurement was fine and the *summary statistic* had a knob in it. The tell is the same though —
+nothing in the output shows it, you have to go looking.
+
+So: any estimator with a tunable constant reports its own sensitivity beside its value.
+`run_phase0.py` emits `knee_*_by_frac` and `knee_*_frac_spread` into the summary and prints a NOTE
+when the spread exceeds `FRAC_SPREAD_OK`. A statistic whose answer tracks its own knob is describing
+the knob, and does not get quoted as a finding.
+
+### 8. Distinguish "the frozen base does not do this" from "this cannot work"
 
 SCD full fine-tunes for 55K steps to *teach* the model to rewire. Zero-shot measurements on frozen
 H3 are budget estimates — how far the base sits from the target wiring and which half has to move —
