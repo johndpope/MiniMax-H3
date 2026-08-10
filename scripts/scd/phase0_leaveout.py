@@ -46,44 +46,14 @@ def video_loss(model, stream, h, target_rows):
     return F.mse_loss(v.float(), target_rows.float()).item()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--latents", required=True)
-    ap.add_argument("--text", required=True)
-    ap.add_argument("--latent-t", type=int, default=7,
-                    help="must sit on the 5n+2 grid (2, 7, 12, ...) — see pixel_frames_for_latent")
-    ap.add_argument("--u-grid", type=float, nargs="+", default=[0.1, 0.3, 0.5, 0.7, 0.9],
-                    help="the paper's 5 noise levels, drawn on H3's OWN density: "
-                         "sigma = shift_sigma(u, 12), so u is uniform where training is uniform")
-    ap.add_argument("--sigmas", type=float, nargs="+", default=None,
-                    help="raw sigmas, bypassing the shift map. Off-distribution below ~0.5 — "
-                         "H3 trains ~3%% of steps under sigma 0.3 and the model is anticorrelated "
-                         "with the target there, so a flat 0.1..0.9 grid scores mostly noise.")
-    ap.add_argument("--blocks-to-swap", type=int, default=0)
-    ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
-    ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
-    ap.add_argument("--out", default="docs/phase0_leaveout.json")
-    args = ap.parse_args()
+@torch.no_grad()
+def measure(mm, model, video_latent, text_embeds, sigmas, device, dtype, quiet=False):
+    """Leave-one-out sweep over every block at every sigma. Model stays loaded — run_phase0.py."""
+    def say(*a):
+        if not quiet:
+            print(*a, flush=True)
 
-    mm, load_dit = import_fizgig(args.fizgig_src)
-    device, dtype = torch.device("cuda"), torch.bfloat16
-
-    model = load_dit(args.checkpoint, device=device, compute_dtype=dtype,
-                     quantize=args.base_quant != "none", blocks_to_swap=args.blocks_to_swap,
-                     base_quant="nf4" if args.base_quant == "nf4" else "auto")
-    model.enable_block_swap(args.blocks_to_swap)
-
-    mm.pixel_frames_for_latent(args.latent_t)   # raises if off the 5n+2 grid the DiT requires
-    video_latent = load_latents(args.latents, args.latent_t, device)
-    text_embeds = load_text(args.text, device, dtype)
     n_blocks = len(model.blocks)
-
-    sigmas = args.sigmas or [mm.shift_sigma(u, mm.VIDEO_SIGMA_SHIFT) for u in args.u_grid]
-    print(f"sigmas: {[round(s, 4) for s in sigmas]}"
-          f"{'' if args.sigmas else f' (from u={args.u_grid} through shift {mm.VIDEO_SIGMA_SHIFT})'}",
-          flush=True)
-
     t0 = time.time()
     base_by_sigma, loo_by_sigma = {}, {}
     for sigma in sigmas:
@@ -119,19 +89,39 @@ def main():
         loo_by_sigma[sigma] = losses
         del h_in, st
         torch.cuda.empty_cache()
-        print(f"sigma={sigma}: baseline {base:.5f}  worst block {max(range(n_blocks), key=lambda k: losses[k])}"
-              f" ({max(losses):.5f})  best {min(range(n_blocks), key=lambda k: losses[k])}"
-              f" ({min(losses):.5f})  [{(time.time() - t0) / 60:.1f} min]", flush=True)
+        say(f"sigma={sigma}: baseline {base:.5f}  worst block {max(range(n_blocks), key=lambda k: losses[k])}"
+            f" ({max(losses):.5f})  best {min(range(n_blocks), key=lambda k: losses[k])}"
+            f" ({min(losses):.5f})  [{(time.time() - t0) / 60:.1f} min]")
 
     ns = len(sigmas)
-    base_mean = sum(base_by_sigma.values()) / ns
     # Relative cost of removing a layer, averaged over noise levels: the paper's y-axis is the
     # validation loss itself, but normalising by the baseline makes the sigmas commensurate
     # (loss magnitude varies several-fold across the sigma grid).
     rel = [sum(loo_by_sigma[s][i] / base_by_sigma[s] - 1.0 for s in sigmas) / ns
            for i in range(n_blocks)]
+    thirds = [sum(rel[a:b]) / (b - a) for a, b in
+              [(0, n_blocks // 3), (n_blocks // 3, 2 * n_blocks // 3), (2 * n_blocks // 3, n_blocks)]]
 
-    order = sorted(range(n_blocks), key=lambda i: rel[i], reverse=True)
+    return {
+        "sigmas": sigmas, "n_blocks": n_blocks,
+        "baseline_loss_by_sigma": {str(k): v for k, v in base_by_sigma.items()},
+        "leaveout_loss_by_sigma": {str(k): v for k, v in loo_by_sigma.items()},
+        "relative_cost": rel,
+        "ranked_most_important": sorted(range(n_blocks), key=lambda i: rel[i], reverse=True),
+        "mean_rel_cost_thirds": thirds, "elapsed_s": time.time() - t0,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def load_bearing(rel, k=4):
+    """The k blocks the decoder must contain. Stability of this SET across clips is the thing
+    Phase 1 depends on — a split that reshuffles per clip is not a split."""
+    return sorted(sorted(range(len(rel)), key=lambda i: rel[i], reverse=True)[:k])
+
+
+def report(p):
+    rel, n_blocks, thirds = p["relative_cost"], p["n_blocks"], p["mean_rel_cost_thirds"]
+    base_mean = sum(p["baseline_loss_by_sigma"].values()) / len(p["sigmas"])
     print(f"\nbaseline loss (mean over sigmas): {base_mean:.5f}")
     print(f"\n{'blk':>4} {'rel cost':>10}   {'blk':>4} {'rel cost':>10}   {'blk':>4} {'rel cost':>10}")
     half = (n_blocks + 2) // 3
@@ -142,24 +132,69 @@ def main():
             cells.append(f"{i:>4} {rel[i]:>10.4f}" if i < n_blocks else " " * 15)
         print("   ".join(cells))
 
+    order = p["ranked_most_important"]
     print(f"\nmost load-bearing (top 10): {order[:10]}")
     print(f"least load-bearing (bottom 10): {sorted(order[-10:])}")
-    thirds = [sum(rel[a:b]) / (b - a) for a, b in
-              [(0, n_blocks // 3), (n_blocks // 3, 2 * n_blocks // 3), (2 * n_blocks // 3, n_blocks)]]
+    print(f"decoder must contain: {load_bearing(rel)}")
     print(f"mean rel cost by third: early {thirds[0]:.4f}  middle {thirds[1]:.4f}  late {thirds[2]:.4f}")
     print(f"paper's shape is early-high, middle-low, late-high -> "
           f"{'MATCHES' if thirds[1] < thirds[0] and thirds[1] < thirds[2] else 'DOES NOT MATCH'}")
-    print(f"elapsed {(time.time() - t0) / 60:.1f} min")
+    print(f"elapsed {p['elapsed_s'] / 60:.1f} min")
 
-    payload = {
-        "checkpoint": os.path.basename(args.checkpoint.rstrip("/")), "sigmas": sigmas,
-        "u_grid": None if args.sigmas else args.u_grid, "latent_t": args.latent_t,
-        "n_blocks": n_blocks, "baseline_loss_by_sigma": {str(k): v for k, v in base_by_sigma.items()},
-        "leaveout_loss_by_sigma": {str(k): v for k, v in loo_by_sigma.items()},
-        "relative_cost": rel, "ranked_most_important": order,
-        "mean_rel_cost_thirds": thirds, "elapsed_s": time.time() - t0,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
+
+def resolve_sigmas(mm, args):
+    return args.sigmas or [mm.shift_sigma(u, mm.VIDEO_SIGMA_SHIFT) for u in args.u_grid]
+
+
+def add_args(ap):
+    """Shared with run_phase0.py so the two entry points cannot drift apart."""
+    ap.add_argument("--latent-t", type=int, default=7,
+                    help="must sit on the 5n+2 grid (2, 7, 12, ...) — see pixel_frames_for_latent")
+    ap.add_argument("--u-grid", type=float, nargs="+", default=[0.1, 0.3, 0.5, 0.7, 0.9],
+                    help="the paper's 5 noise levels, drawn on H3's OWN density: "
+                         "sigma = shift_sigma(u, 12), so u is uniform where training is uniform")
+    ap.add_argument("--sigmas", type=float, nargs="+", default=None,
+                    help="raw sigmas, bypassing the shift map. Off-distribution below ~0.5 — "
+                         "H3 trains ~3%% of steps under sigma 0.3 and the model is anticorrelated "
+                         "with the target there, so a flat 0.1..0.9 grid scores mostly noise.")
+    ap.add_argument("--blocks-to-swap", type=int, default=0)
+    ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
+    ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
+    return ap
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--latents", required=True)
+    ap.add_argument("--text", required=True)
+    ap.add_argument("--out", default="docs/phase0_leaveout.json")
+    add_args(ap)
+    args = ap.parse_args()
+
+    mm, load_dit = import_fizgig(args.fizgig_src)
+    device, dtype = torch.device("cuda"), torch.bfloat16
+
+    model = load_dit(args.checkpoint, device=device, compute_dtype=dtype,
+                     quantize=args.base_quant != "none", blocks_to_swap=args.blocks_to_swap,
+                     base_quant="nf4" if args.base_quant == "nf4" else "auto")
+    model.enable_block_swap(args.blocks_to_swap)
+
+    mm.pixel_frames_for_latent(args.latent_t)   # raises if off the 5n+2 grid the DiT requires
+    video_latent = load_latents(args.latents, args.latent_t, device)
+    text_embeds = load_text(args.text, device, dtype)
+
+    sigmas = resolve_sigmas(mm, args)
+    print(f"sigmas: {[round(s, 4) for s in sigmas]}"
+          f"{'' if args.sigmas else f' (from u={args.u_grid} through shift {mm.VIDEO_SIGMA_SHIFT})'}",
+          flush=True)
+
+    payload = measure(mm, model, video_latent, text_embeds, sigmas, device, dtype)
+    payload.update(checkpoint=os.path.basename(args.checkpoint.rstrip("/")),
+                   clip=os.path.basename(args.latents), latent_t=args.latent_t,
+                   u_grid=None if args.sigmas else args.u_grid)
+    report(payload)
+
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as fh:
         json.dump(payload, fh, indent=2)

@@ -1,0 +1,194 @@
+[
+  {
+    "id": "text-plateau-13",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 13,
+    "expected": 0.975,
+    "tol": 0.001
+  },
+  {
+    "id": "text-28",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 28,
+    "expected": 0.96,
+    "tol": 0.001
+  },
+  {
+    "id": "text-29",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 29,
+    "expected": 0.91,
+    "tol": 0.001
+  },
+  {
+    "id": "text-knee-30",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 30,
+    "expected": 0.777,
+    "tol": 0.001
+  },
+  {
+    "id": "text-31",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 31,
+    "expected": 0.677,
+    "tol": 0.001
+  },
+  {
+    "id": "text-49",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos_text",
+    "index": 49,
+    "expected": 0.037,
+    "tol": 0.001
+  },
+  {
+    "id": "video-0",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos",
+    "index": 0,
+    "expected": 0.226,
+    "tol": 0.001
+  },
+  {
+    "id": "video-plateau-1",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos",
+    "index": 1,
+    "expected": 0.807,
+    "tol": 0.001
+  },
+  {
+    "id": "video-29",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos",
+    "index": 29,
+    "expected": 0.657,
+    "tol": 0.001
+  },
+  {
+    "id": "video-knee-30",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos",
+    "index": 30,
+    "expected": 0.402,
+    "tol": 0.001
+  },
+  {
+    "id": "video-49",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "sigma_centered_cos",
+    "index": 49,
+    "expected": 0.082,
+    "tol": 0.001
+  },
+  {
+    "id": "causal-worst-46",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "causal_centered_cos",
+    "index": 46,
+    "expected": 0.922,
+    "tol": 0.001
+  },
+  {
+    "id": "causal-rell2-0",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "causal_rel_l2",
+    "index": 0,
+    "expected": 0.094,
+    "tol": 0.001
+  },
+  {
+    "id": "ownframe-rell2-0",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "own_frame_rel_l2",
+    "index": 0,
+    "expected": 0.202,
+    "tol": 0.001
+  },
+  {
+    "id": "ownframe-min-46",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "own_frame_centered_cos",
+    "index": 46,
+    "expected": 0.74,
+    "tol": 0.001
+  },
+  {
+    "id": "commonmode-0",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "common_mode_ratio",
+    "index": 0,
+    "expected": 0.918,
+    "tol": 0.001
+  },
+  {
+    "id": "commonmode-49",
+    "file": "docs/phase0_validation_ondist.json",
+    "key": "common_mode_ratio",
+    "index": 49,
+    "expected": 0.997,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-block-0",
+    "file": "docs/phase0_leaveout.json",
+    "key": "relative_cost",
+    "index": 0,
+    "expected": 0.964,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-block-1",
+    "file": "docs/phase0_leaveout.json",
+    "key": "relative_cost",
+    "index": 1,
+    "expected": 0.554,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-block-48",
+    "file": "docs/phase0_leaveout.json",
+    "key": "relative_cost",
+    "index": 48,
+    "expected": 0.045,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-block-49",
+    "file": "docs/phase0_leaveout.json",
+    "key": "relative_cost",
+    "index": 49,
+    "expected": 0.821,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-third-early",
+    "file": "docs/phase0_leaveout.json",
+    "key": "mean_rel_cost_thirds",
+    "index": 0,
+    "expected": 0.0948,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-third-middle",
+    "file": "docs/phase0_leaveout.json",
+    "key": "mean_rel_cost_thirds",
+    "index": 1,
+    "expected": 0.0004,
+    "tol": 0.001
+  },
+  {
+    "id": "loo-third-late",
+    "file": "docs/phase0_leaveout.json",
+    "key": "mean_rel_cost_thirds",
+    "index": 2,
+    "expected": 0.0471,
+    "tol": 0.001
+  }
+]

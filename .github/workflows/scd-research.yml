@@ -1,0 +1,42 @@
+# Validation for the SCD port research in docs/ and scripts/scd/ (local additions, not upstream
+# mirror content). CI has no GPU and no weights, so it cannot run the probes — it checks the
+# things that can be checked without them: that recorded results carry a valid configuration, that
+# the numbers quoted in the design doc still match the JSON they came from, and that the scripts
+# lint and parse.
+name: scd-research
+
+on:
+  push:
+    paths: ['docs/**', 'scripts/scd/**', '.github/workflows/scd-research.yml']
+  pull_request:
+    paths: ['docs/**', 'scripts/scd/**', '.github/workflows/scd-research.yml']
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Guards the two configuration errors that produced false findings in Phase 0: an
+      # off-distribution sigma grid, and a latent_t off the DiT's 5n+2 frame grid. Also verifies
+      # every number registered in docs/phase0_claims.json against the result file it cites, so
+      # the design doc's prose cannot silently drift from the JSON when a probe is re-run.
+      - name: Validate recorded findings
+        run: python3 scripts/scd/check_findings.py
+
+      - name: Lint
+        run: ruff check scripts/scd
+
+      # The probes import fizgig and torch, neither of which is available here, so a real import
+      # would fail for uninteresting reasons. Compiling catches syntax and indentation breakage,
+      # which is what actually goes wrong when these are edited without being run.
+      - name: Byte-compile probes
+        run: python3 -m compileall -q scripts/scd

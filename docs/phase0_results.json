@@ -907,5 +907,7 @@
   ],
   "timestamp": "2026-08-10T20:59:05",
   "suggested_split": 36,
-  "tail_intra_frame_mass": 0.08176852543564404
+  "tail_intra_frame_mass": 0.08176852543564404,
+  "superseded_by": "docs/phase0_validation_ondist.json",
+  "superseded_reason": "sigma=0 reference (off H3's training density) and latent_t=8 (off the DiT's 5n+2 grid); kept as the record of what that configuration produced"
 }

@@ -1,0 +1,10 @@
+line-length = 115   # a handful of print-format lines run long; 115 is the observed max
+
+[lint]
+select = ["E", "F", "W"]
+
+[lint.per-file-ignores]
+# The microbenchmarks time a lambda and then `del` the tensors it closed over, to release VRAM
+# before the next size is allocated. The lambda has already run inside timeit() by then, so this
+# is correct, but ruff analyses deferred bodies after the `del` and reports the names as unbound.
+"tier0_bench.py" = ["F821"]

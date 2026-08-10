@@ -50,7 +50,6 @@ import os
 import time
 
 import torch
-import torch.nn.functional as F
 
 from phase0_probe import (build_stream, cos_rows, frame_causal_mask, import_fizgig, load_latents,
                           load_text, mm_apply_rope, run_block)
@@ -150,63 +149,28 @@ def isolated_pass(model, mm, ref, clean_full, clean_video, mask, device, dtype):
     return cos_v, rl2, ccos
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--latents", required=True)
-    ap.add_argument("--text", required=True)
-    ap.add_argument("--latent-t", type=int, default=7,
-                    help="must sit on the 5n+2 grid (2, 7, 12, ...) — see pixel_frames_for_latent")
-    ap.add_argument("--u-ref", type=float, default=0.1,
-                    help="reference noise level, as a quantile of H3's OWN training density: "
-                         "sigma = shift_sigma(u, 12). u=0 gives the old sigma=0 reference, which "
-                         "is off-distribution — see the module docstring.")
-    ap.add_argument("--u", type=float, default=0.9, help="test noise level, same density as --u-ref")
-    ap.add_argument("--raw-sigmas", type=float, nargs=2, default=None,
-                    metavar=("REF", "TEST"), help="bypass the shift map and give sigmas directly")
-    ap.add_argument("--attn-sample", type=int, default=192)
-    ap.add_argument("--blocks-to-swap", type=int, default=42)
-    ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
-    ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
-    ap.add_argument("--out", default="docs/phase0_validation.json")
-    args = ap.parse_args()
-
-    mm, load_dit = import_fizgig(args.fizgig_src)
-    device, dtype = torch.device("cuda"), torch.bfloat16
-
-    model = load_dit(args.checkpoint, device=device, compute_dtype=dtype,
-                     quantize=args.base_quant != "none", blocks_to_swap=args.blocks_to_swap,
-                     base_quant="nf4" if args.base_quant == "nf4" else "auto")
-    model.enable_block_swap(args.blocks_to_swap)
-
-    mm.pixel_frames_for_latent(args.latent_t)   # raises if off the 5n+2 grid the DiT requires
-    video_latent = load_latents(args.latents, args.latent_t, device)
-    text_embeds = load_text(args.text, device, dtype)
-
-    if args.raw_sigmas:
-        sigma_ref, sigma_test = args.raw_sigmas
-    else:
-        sigma_ref = mm.shift_sigma(args.u_ref, mm.VIDEO_SIGMA_SHIFT)
-        sigma_test = mm.shift_sigma(args.u, mm.VIDEO_SIGMA_SHIFT)
-    print(f"reference sigma {sigma_ref:.4f}, test sigma {sigma_test:.4f}"
-          f"{'' if args.raw_sigmas else f' (u={args.u_ref}/{args.u} through shift {mm.VIDEO_SIGMA_SHIFT})'}",
-          flush=True)
+@torch.no_grad()
+def measure(mm, model, video_latent, text_embeds, sigma_ref, sigma_test, device, dtype,
+            attn_sample=192, quiet=False):
+    """Run all four passes and return the result payload. Model stays loaded — see run_phase0.py."""
+    def say(*a):
+        if not quiet:
+            print(*a, flush=True)
 
     ref = build_stream(mm, model, video_latent, text_embeds, sigma_ref, device, dtype)
     S, vs, fr = ref["seq_len"], ref["video_start"], ref["frame_rows"]
     text_len = ref["audio_start"]
     n_blocks = len(model.blocks)
-    print(f"S={S} video_start={vs} frame_rows={fr} latent_t={ref['latent_t']} "
-          f"blocks={n_blocks}", flush=True)
+    say(f"S={S} video_start={vs} frame_rows={fr} latent_t={ref['latent_t']} blocks={n_blocks}")
 
     g = torch.Generator(device).manual_seed(7)
-    query_rows = (vs + torch.randperm(S - vs, generator=g, device=device)[:args.attn_sample])
+    query_rows = (vs + torch.randperm(S - vs, generator=g, device=device)[:attn_sample])
     query_rows = query_rows.sort().values
 
     t0 = time.time()
 
     # --- reference pass, keeping every block output, plus the attention decomposition ---------
-    print(f"[1/4] reference pass (sigma={sigma_ref:.4f}) + attention decomposition", flush=True)
+    say(f"[1/4] reference pass (sigma={sigma_ref:.4f}) + attention decomposition")
     clean_full, breakdown, cm = [], [], []
     h = ref["h"]
     for i, block in enumerate(model.blocks):
@@ -224,12 +188,12 @@ def main():
     clean_video = [o[vs:] for o in clean_full]
 
     # --- control 1: does the mask reach the real forward path? --------------------------------
-    print("[2/4] own-frame-only mask (control)", flush=True)
+    say("[2/4] own-frame-only mask (control)")
     ofm = own_frame_mask(S, vs, fr, device)
     own_cos, own_rl2, own_ccos = isolated_pass(model, mm, ref, clean_full, clean_video,
                                                ofm, device, dtype)
 
-    print("[3/4] frame-causal mask, L2 metrics", flush=True)
+    say("[3/4] frame-causal mask, L2 metrics")
     fcm = frame_causal_mask(S, vs, fr, ref["latent_t"], device)
     cau_cos, cau_rl2, cau_ccos = isolated_pass(model, mm, ref, clean_full, clean_video,
                                                fcm, device, dtype)
@@ -239,7 +203,7 @@ def main():
     # about SCD. What an SCD encoder would actually cache is the CONTEXT — the text and audio
     # rows. Those are only indirectly noised, via attention to the video rows, so scoring them
     # separately is the fair test of the premise.
-    print(f"[4/4] test pass (sigma={sigma_test:.4f}) with L2 metrics", flush=True)
+    say(f"[4/4] test pass (sigma={sigma_test:.4f}) with L2 metrics")
     st = build_stream(mm, model, video_latent, text_embeds, sigma_test, device, dtype)
     clean_text = [o[:text_len] for o in clean_full]
     clean_audio = [o[text_len:vs] for o in clean_full]
@@ -261,10 +225,48 @@ def main():
         txt_ccos.append(score_video(hc[:text_len], clean_text[i])[2])
         aud_ccos.append(score_video(hc[text_len:vs], clean_audio[i])[2])
 
-    elapsed = time.time() - t0
+    return {
+        "sigma_ref": sigma_ref, "sigma_test": sigma_test, "latent_t": ref["latent_t"],
+        "seq_len": S, "video_start": vs, "frame_rows": fr, "n_blocks": n_blocks,
+        "own_frame_cos": own_cos, "own_frame_rel_l2": own_rl2, "own_frame_centered_cos": own_ccos,
+        "causal_cos": cau_cos, "causal_rel_l2": cau_rl2, "causal_centered_cos": cau_ccos,
+        "sigma_cos": sig_cos, "sigma_rel_l2": sig_rl2, "sigma_centered_cos": sig_ccos,
+        "sigma_centered_cos_text": txt_ccos, "sigma_centered_cos_audio": aud_ccos,
+        "common_mode_ratio": cm, "attention_breakdown": breakdown,
+        "elapsed_s": time.time() - t0, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
 
+
+def knee(curve, frac=0.85):
+    """First block that falls below `frac` of the plateau — i.e. where the plateau ends.
+
+    Returned as the index of the first block OFF the plateau, so the encoder that keeps it is
+    blocks 0..knee-1.
+
+    Deliberately not argmax-of-single-block-drop: on the text curve the 31->32 drop (0.134) edges
+    out the 29->30 drop (0.133) by a thousandth and moves the answer two blocks, which is a
+    coin-flip dressed up as a measurement. "First real departure from the plateau" is the thing
+    the design doc actually claims, and it is stable under that kind of tie.
+    """
+    top = max(range(len(curve)), key=lambda i: curve[i])
+    for i in range(top + 1, len(curve)):
+        if curve[i] < frac * curve[top]:
+            return i
+    return len(curve)
+
+
+def report(p):
+    """Print the per-block table and the control verdicts for one `measure()` payload."""
+    n_blocks, S, vs, cm = p["n_blocks"], p["seq_len"], p["video_start"], p["common_mode_ratio"]
+    own_cos, own_rl2, own_ccos = p["own_frame_cos"], p["own_frame_rel_l2"], p["own_frame_centered_cos"]
+    cau_cos, cau_rl2, cau_ccos = p["causal_cos"], p["causal_rel_l2"], p["causal_centered_cos"]
+    sig_cos, sig_rl2, sig_ccos = p["sigma_cos"], p["sigma_rel_l2"], p["sigma_centered_cos"]
+    txt_ccos, aud_ccos, breakdown = (p["sigma_centered_cos_text"], p["sigma_centered_cos_audio"],
+                                     p["attention_breakdown"])
+
+    s_ref, s_test = p["sigma_ref"], p["sigma_test"]
     print(f"\n{'blk':>4} | {'own-frame mask':^24} | {'frame-causal mask':^24} | "
-          f"{f'sigma {sigma_ref:.3f}->{sigma_test:.3f}':^24} | {'cm':>5}")
+          f"{f'sigma {s_ref:.3f}->{s_test:.3f}':^24} | {'cm':>5}")
     print(f"{'':>4} | {'cos':>7} {'relL2':>7} {'ccos':>7} | {'cos':>7} {'relL2':>7} {'ccos':>7} | "
           f"{'cos':>7} {'relL2':>7} {'ccos':>7} | {'txt':>6} {'aud':>6} | {'cm':>5}")
     print("-" * 114)
@@ -274,7 +276,7 @@ def main():
               f"{sig_cos[i]:>7.4f} {sig_rl2[i]:>7.4f} {sig_ccos[i]:>7.4f} | "
               f"{txt_ccos[i]:>6.3f} {aud_ccos[i]:>6.3f} | {cm[i]:>5.3f}")
 
-    print(f"\nattention mass for video queries (mean over blocks and sampled rows):")
+    print("\nattention mass for video queries (mean over blocks and sampled rows):")
     keys = ["text", "audio", "past", "own", "future"]
     print("  " + "  ".join(f"{k:>8}" for k in keys))
     print("  " + "  ".join(f"{sum(b[k] for b in breakdown) / n_blocks:>8.4f}" for k in keys))
@@ -290,21 +292,75 @@ def main():
     print(f"CONTROL 3 (cos inflation): common-mode ratio blocks 0/mid/last = "
           f"{cm[0]:.3f} / {cm[n_blocks // 2]:.3f} / {cm[-1]:.3f}  "
           f"(uncorrelated-rows baseline {1 / math.sqrt(S - vs):.3f})")
-    print(f"elapsed {elapsed / 60:.1f} min")
+    kt, kv = knee(txt_ccos), knee(sig_ccos)
+    # Reported separately on purpose. The text plateau is flat and its departure is unambiguous;
+    # the video plateau erodes for a few blocks before its cliff, so the two can differ by one and
+    # collapsing them to a single "encoder = 0..N" hides which row set the number came from.
+    print(f"KNEE (plateau ends): text rows block {kt}, video rows block {kv}"
+          + ("" if abs(kt - kv) <= 1 else
+             "  [ROWS DISAGREE BY >1 BLOCK — no split should be read off this]"))
+    print(f"elapsed {p['elapsed_s'] / 60:.1f} min")
 
-    payload = {
-        "checkpoint": os.path.basename(args.checkpoint.rstrip("/")),
-        "sigma_ref": sigma_ref, "sigma_test": sigma_test, "latent_t": args.latent_t,
-        "u_ref": None if args.raw_sigmas else args.u_ref,
-        "u_test": None if args.raw_sigmas else args.u,
-        "seq_len": S, "video_start": vs, "frame_rows": fr, "n_blocks": n_blocks,
-        "own_frame_cos": own_cos, "own_frame_rel_l2": own_rl2, "own_frame_centered_cos": own_ccos,
-        "causal_cos": cau_cos, "causal_rel_l2": cau_rl2, "causal_centered_cos": cau_ccos,
-        "sigma_cos": sig_cos, "sigma_rel_l2": sig_rl2, "sigma_centered_cos": sig_ccos,
-        "sigma_centered_cos_text": txt_ccos, "sigma_centered_cos_audio": aud_ccos,
-        "common_mode_ratio": cm, "attention_breakdown": breakdown,
-        "elapsed_s": elapsed, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
+
+def add_args(ap):
+    """Shared with run_phase0.py so the two entry points cannot drift apart."""
+    ap.add_argument("--latent-t", type=int, default=7,
+                    help="must sit on the 5n+2 grid (2, 7, 12, ...) — see pixel_frames_for_latent")
+    ap.add_argument("--u-ref", type=float, default=0.1,
+                    help="reference noise level, as a quantile of H3's OWN training density: "
+                         "sigma = shift_sigma(u, 12). u=0 gives the old sigma=0 reference, which "
+                         "is off-distribution — see the module docstring.")
+    ap.add_argument("--u", type=float, default=0.9, help="test noise level, same density as --u-ref")
+    ap.add_argument("--raw-sigmas", type=float, nargs=2, default=None,
+                    metavar=("REF", "TEST"), help="bypass the shift map and give sigmas directly")
+    ap.add_argument("--attn-sample", type=int, default=192)
+    ap.add_argument("--blocks-to-swap", type=int, default=0)
+    ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
+    ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
+    return ap
+
+
+def resolve_sigmas(mm, args):
+    if args.raw_sigmas:
+        return tuple(args.raw_sigmas)
+    return (mm.shift_sigma(args.u_ref, mm.VIDEO_SIGMA_SHIFT),
+            mm.shift_sigma(args.u, mm.VIDEO_SIGMA_SHIFT))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--latents", required=True)
+    ap.add_argument("--text", required=True)
+    ap.add_argument("--out", default="docs/phase0_validation.json")
+    add_args(ap)
+    args = ap.parse_args()
+
+    mm, load_dit = import_fizgig(args.fizgig_src)
+    device, dtype = torch.device("cuda"), torch.bfloat16
+
+    model = load_dit(args.checkpoint, device=device, compute_dtype=dtype,
+                     quantize=args.base_quant != "none", blocks_to_swap=args.blocks_to_swap,
+                     base_quant="nf4" if args.base_quant == "nf4" else "auto")
+    model.enable_block_swap(args.blocks_to_swap)
+
+    mm.pixel_frames_for_latent(args.latent_t)   # raises if off the 5n+2 grid the DiT requires
+    video_latent = load_latents(args.latents, args.latent_t, device)
+    text_embeds = load_text(args.text, device, dtype)
+
+    sigma_ref, sigma_test = resolve_sigmas(mm, args)
+    print(f"reference sigma {sigma_ref:.4f}, test sigma {sigma_test:.4f}"
+          f"{'' if args.raw_sigmas else f' (u={args.u_ref}/{args.u} through shift {mm.VIDEO_SIGMA_SHIFT})'}",
+          flush=True)
+
+    payload = measure(mm, model, video_latent, text_embeds, sigma_ref, sigma_test, device, dtype,
+                      attn_sample=args.attn_sample)
+    payload.update(checkpoint=os.path.basename(args.checkpoint.rstrip("/")),
+                   clip=os.path.basename(args.latents),
+                   u_ref=None if args.raw_sigmas else args.u_ref,
+                   u_test=None if args.raw_sigmas else args.u)
+    report(payload)
+
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as fh:
         json.dump(payload, fh, indent=2)

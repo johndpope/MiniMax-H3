@@ -982,5 +982,7 @@
     }
   ],
   "elapsed_s": 38.90355968475342,
-  "timestamp": "2026-08-10T21:26:09"
+  "timestamp": "2026-08-10T21:26:09",
+  "superseded_by": "docs/phase0_validation_ondist.json",
+  "superseded_reason": "sigma=0 reference (off H3's training density) and latent_t=8 (off the DiT's 5n+2 grid); kept as the record of what that configuration produced"
 }

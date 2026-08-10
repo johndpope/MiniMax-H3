@@ -17,7 +17,6 @@ far as the card allows.
 """
 
 import argparse
-import math
 import os
 import sys
 

@@ -18,7 +18,6 @@ where R = rows per latent frame and token_concat doubles the decoder's token cou
 
 import argparse
 import json
-import math
 import time
 
 import torch

@@ -406,7 +406,9 @@ Two smaller corrections found in the same debugging pass: all earlier Phase 0 ru
 
 Consequences to fold into the design: D1's assumption that audio rides the shared encoder cache is not supported by axis (a) — audio rows are decoder-side state (see open question 1); D4 now carries an explicit training cost rather than an assumed-free one; Phase 1's identity-path test needs rewriting because the paper's decoder is a re-composition of both ends rather than a suffix (§2), so `concat(enc, dec)` provably cannot equal the base forward.
 
-Caveat on generality: one clip, one prompt, one resolution, one σ pair for axes (a)–(c), and all of it zero-shot on a frozen base. Enough to place scaffolding and size the adapter; not enough to commit training spend against. The cheapest way to buy confidence before Phase 1 is breadth, not depth — both sweeps together are under 4 minutes on one 4090, so run them over ~10 clips and check that the block-29/30 knee and the {0, 1, 48, 49} load-bearing set are stable across content.
+Caveat on generality: one clip, one prompt, one resolution, one σ pair for axes (a)–(c), and all of it zero-shot on a frozen base. Enough to place scaffolding and size the adapter; not enough to commit training spend against. The cheapest way to buy confidence before Phase 1 is breadth, not depth — `scripts/scd/run_phase0.py` runs both probes over a clip set on one model load and appends each run to `docs/phase0_ledger.jsonl` with its full config, then reports whether the block-29/30 knee and the {0, 1, 48, 49} load-bearing set hold across content. It currently reports `n<5, not enough to call anything stable`, which is the honest state of every number in this section.
+
+How these measurements are made, and what has to be true before a finding is allowed into this document, is written down in [`SCD_RESEARCH_PROTOCOL.md`](SCD_RESEARCH_PROTOCOL.md). The numbers quoted above are registered in `docs/phase0_claims.json` and verified against their source JSON by `scripts/scd/check_findings.py` in CI, so the prose here cannot drift from the data when a probe is re-run.
 
 ### Phase 1 — `MiniMaxH3SCDModel` skeleton (2–3 weeks)
 
