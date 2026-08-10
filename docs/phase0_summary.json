@@ -64,6 +64,6 @@
   "third_middle": 0.0022999070970099018,
   "third_late": 0.038115475772137475,
   "worst_causal_rel_l2": 0.12012883275747299,
-  "n_groups": 2,
+  "n_groups": 5,
   "source": "docs/phase0_ledger.jsonl"
 }

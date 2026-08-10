@@ -258,7 +258,9 @@
     "id": "geom512-seq-len",
     "file": "docs/phase0_ledger.jsonl",
     "row": {
-      "clip": "isodiorama"
+      "clip": "isodiorama",
+      "sigma_ref": 0.5714285714,
+      "sigma_test": 0.9908256881
     },
     "key": "seq_len",
     "expected": 2134,
@@ -282,6 +284,54 @@
     },
     "key": "knee_video",
     "expected": 29,
+    "tol": 0
+  },
+  {
+    "id": "sigma-knee-wide-08",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama",
+      "sigma_ref": 0.5714285714,
+      "sigma_test": 0.9908256881
+    },
+    "key": "knee_text",
+    "expected": 30,
+    "tol": 0
+  },
+  {
+    "id": "sigma-knee-wide-04",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama",
+      "sigma_ref": 0.5714285714,
+      "sigma_test": 0.9230769231
+    },
+    "key": "knee_text",
+    "expected": 31,
+    "tol": 0
+  },
+  {
+    "id": "sigma-knee-narrow-hi",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama",
+      "sigma_ref": 0.9655172414,
+      "sigma_test": 0.9908256881
+    },
+    "key": "knee_text",
+    "expected": 35,
+    "tol": 0
+  },
+  {
+    "id": "sigma-knee-narrow-mid",
+    "file": "docs/phase0_ledger.jsonl",
+    "row": {
+      "clip": "isodiorama",
+      "sigma_ref": 0.8372093023,
+      "sigma_test": 0.9230769231
+    },
+    "key": "knee_text",
+    "expected": 37,
     "tol": 0
   }
 ]

@@ -162,6 +162,18 @@ def check_ledger(errs, warns):
     return rows
 
 
+def field_eq(have, want):
+    """Selector match. Floats compare with slack so a claim can name sigma as 0.5714285714 rather
+    than carrying the full 17-digit repr, which differs in the last bit between the value a claim
+    was written from and the one shift_sigma() recomputes."""
+    if isinstance(have, float) or isinstance(want, float):
+        try:
+            return abs(float(have) - float(want)) < 1e-9
+        except (TypeError, ValueError):
+            return False
+    return have == want
+
+
 def load_claim_source(c, errs):
     """The object a claim reads its key from — a flat JSON file, or one row of the ledger.
 
@@ -174,7 +186,7 @@ def load_claim_source(c, errs):
     if "row" not in c:
         return json.load(open(src))
     match = [r for r in (json.loads(ln) for ln in open(src) if ln.strip())
-             if all(r.get(k) == v for k, v in c["row"].items())]
+             if all(field_eq(r.get(k), v) for k, v in c["row"].items())]
     if len(match) != 1:
         errs.append(f"claim {c['id']!r}: row selector {c['row']} matches {len(match)} rows in "
                     f"{src}, expected exactly 1")

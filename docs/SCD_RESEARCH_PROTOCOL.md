@@ -112,7 +112,25 @@ So: any estimator with a tunable constant reports its own sensitivity beside its
 when the spread exceeds `FRAC_SPREAD_OK`. A statistic whose answer tracks its own knob is describing
 the knob, and does not get quoted as a finding.
 
-### 8. Distinguish "the frozen base does not do this" from "this cannot work"
+### 8. A contrast measurement is quoted with its contrast, and checked for having any
+
+σ-invariance is a difference between two runs, so every number it produces is a function of how far
+apart those two runs are. Sweeping the pair in *u* moves the text knee from 30 (Δu 0.8) to 37
+(Δu 0.2) — a bigger swing than content and geometry combined.
+
+The trap is that this reads like a finding: narrower separation, later knee, more of the stack
+shareable. It is not. Over the same range the curve's total drop across all 50 blocks falls from
+0.78 to 0.32 and the knee's `frac` sensitivity grows from 2 blocks to 13 — the narrow pairs have not
+moved the knee, they have stopped resolving one, and a threshold applied to a curve with no plateau
+returns the threshold. **Rule 7's sensitivity number is what tells the two apart**, which is the
+argument for computing it always rather than when suspicious.
+
+So: quote the contrast beside the result (`Δu`, not raw σ — raw σ is not uniform on H3's density),
+and before reading any knee, check that its frac spread is small. A knee from a curve with no
+plateau is not a late knee. Where a split has to be conservative, the widest on-distribution pair is
+both the most demanding question and the best-resolved one; prefer it.
+
+### 9. Distinguish "the frozen base does not do this" from "this cannot work"
 
 SCD full fine-tunes for 55K steps to *teach* the model to rewire. Zero-shot measurements on frozen
 H3 are budget estimates — how far the base sits from the target wiring and which half has to move —
