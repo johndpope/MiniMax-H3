@@ -24,6 +24,18 @@ kill one specific way the probe could be lying:
                       So report, per block, relative L2 ||a-b||/||a|| and cos after subtracting
                       the clean run's mean row.
 
+  4. on-distribution sigma
+                      The first run used sigma=0 as the reference and sigma=0.9 as the test. H3
+                      draws training sigma as shift_sigma(u, 12) with u uniform, which puts the
+                      median at ~0.92 and ~3%% of steps below 0.3 -- so sigma=0 is a point the
+                      model has essentially never seen, and at low sigma its output is
+                      ANTICORRELATED with the flow-matching target (cos -0.44 at 0.1, see
+                      phase0_leaveout.py). Both endpoints are now drawn on H3's own density: the
+                      reference is u=0.1 (sigma 0.571) and the test is u=0.9 (sigma 0.991), so
+                      the pair still spans the schedule but from inside the training distribution.
+                      Both passes share one noise draw (build_stream seeds eps), so the delta is
+                      sigma sensitivity, not a different sample.
+
 Usage:
     python3 scripts/scd/phase0_validate.py \
         --checkpoint /path/to/FL2VA/transformer \
@@ -143,8 +155,15 @@ def main():
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--latents", required=True)
     ap.add_argument("--text", required=True)
-    ap.add_argument("--latent-t", type=int, default=8)
-    ap.add_argument("--sigma", type=float, default=0.9, help="sigma to re-score with L2 metrics")
+    ap.add_argument("--latent-t", type=int, default=7,
+                    help="must sit on the 5n+2 grid (2, 7, 12, ...) — see pixel_frames_for_latent")
+    ap.add_argument("--u-ref", type=float, default=0.1,
+                    help="reference noise level, as a quantile of H3's OWN training density: "
+                         "sigma = shift_sigma(u, 12). u=0 gives the old sigma=0 reference, which "
+                         "is off-distribution — see the module docstring.")
+    ap.add_argument("--u", type=float, default=0.9, help="test noise level, same density as --u-ref")
+    ap.add_argument("--raw-sigmas", type=float, nargs=2, default=None,
+                    metavar=("REF", "TEST"), help="bypass the shift map and give sigmas directly")
     ap.add_argument("--attn-sample", type=int, default=192)
     ap.add_argument("--blocks-to-swap", type=int, default=42)
     ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
@@ -160,10 +179,20 @@ def main():
                      base_quant="nf4" if args.base_quant == "nf4" else "auto")
     model.enable_block_swap(args.blocks_to_swap)
 
+    mm.pixel_frames_for_latent(args.latent_t)   # raises if off the 5n+2 grid the DiT requires
     video_latent = load_latents(args.latents, args.latent_t, device)
     text_embeds = load_text(args.text, device, dtype)
 
-    ref = build_stream(mm, model, video_latent, text_embeds, 0.0, device, dtype)
+    if args.raw_sigmas:
+        sigma_ref, sigma_test = args.raw_sigmas
+    else:
+        sigma_ref = mm.shift_sigma(args.u_ref, mm.VIDEO_SIGMA_SHIFT)
+        sigma_test = mm.shift_sigma(args.u, mm.VIDEO_SIGMA_SHIFT)
+    print(f"reference sigma {sigma_ref:.4f}, test sigma {sigma_test:.4f}"
+          f"{'' if args.raw_sigmas else f' (u={args.u_ref}/{args.u} through shift {mm.VIDEO_SIGMA_SHIFT})'}",
+          flush=True)
+
+    ref = build_stream(mm, model, video_latent, text_embeds, sigma_ref, device, dtype)
     S, vs, fr = ref["seq_len"], ref["video_start"], ref["frame_rows"]
     text_len = ref["audio_start"]
     n_blocks = len(model.blocks)
@@ -176,8 +205,8 @@ def main():
 
     t0 = time.time()
 
-    # --- clean pass, keeping every block output, plus the attention decomposition -------------
-    print("[1/4] clean pass + attention decomposition", flush=True)
+    # --- reference pass, keeping every block output, plus the attention decomposition ---------
+    print(f"[1/4] reference pass (sigma={sigma_ref:.4f}) + attention decomposition", flush=True)
     clean_full, breakdown, cm = [], [], []
     h = ref["h"]
     for i, block in enumerate(model.blocks):
@@ -210,8 +239,8 @@ def main():
     # about SCD. What an SCD encoder would actually cache is the CONTEXT — the text and audio
     # rows. Those are only indirectly noised, via attention to the video rows, so scoring them
     # separately is the fair test of the premise.
-    print(f"[4/4] sigma={args.sigma} with L2 metrics", flush=True)
-    st = build_stream(mm, model, video_latent, text_embeds, args.sigma, device, dtype)
+    print(f"[4/4] test pass (sigma={sigma_test:.4f}) with L2 metrics", flush=True)
+    st = build_stream(mm, model, video_latent, text_embeds, sigma_test, device, dtype)
     clean_text = [o[:text_len] for o in clean_full]
     clean_audio = [o[text_len:vs] for o in clean_full]
     sig_cos, sig_rl2, sig_ccos = [], [], []
@@ -235,7 +264,7 @@ def main():
     elapsed = time.time() - t0
 
     print(f"\n{'blk':>4} | {'own-frame mask':^24} | {'frame-causal mask':^24} | "
-          f"{'sigma=' + str(args.sigma):^24} | {'cm':>5}")
+          f"{f'sigma {sigma_ref:.3f}->{sigma_test:.3f}':^24} | {'cm':>5}")
     print(f"{'':>4} | {'cos':>7} {'relL2':>7} {'ccos':>7} | {'cos':>7} {'relL2':>7} {'ccos':>7} | "
           f"{'cos':>7} {'relL2':>7} {'ccos':>7} | {'txt':>6} {'aud':>6} | {'cm':>5}")
     print("-" * 114)
@@ -264,7 +293,10 @@ def main():
     print(f"elapsed {elapsed / 60:.1f} min")
 
     payload = {
-        "checkpoint": os.path.basename(args.checkpoint.rstrip("/")), "sigma": args.sigma,
+        "checkpoint": os.path.basename(args.checkpoint.rstrip("/")),
+        "sigma_ref": sigma_ref, "sigma_test": sigma_test, "latent_t": args.latent_t,
+        "u_ref": None if args.raw_sigmas else args.u_ref,
+        "u_test": None if args.raw_sigmas else args.u,
         "seq_len": S, "video_start": vs, "frame_rows": fr, "n_blocks": n_blocks,
         "own_frame_cos": own_cos, "own_frame_rel_l2": own_rl2, "own_frame_centered_cos": own_ccos,
         "causal_cos": cau_cos, "causal_rel_l2": cau_rl2, "causal_centered_cos": cau_ccos,
