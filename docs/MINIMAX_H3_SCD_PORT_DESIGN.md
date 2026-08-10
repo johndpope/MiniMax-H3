@@ -166,6 +166,8 @@ Audio: run the **encoder at σ=0 over clean video *and* audio rows**, then decod
 
 **Rationale:** CastleHill's payoff was visual AR length; H3's product is native stereo AV. Full *causal* AV SCD (audio also frame-causal) remains out of scope for v0.
 
+> **Amended 2026-08-11 by the Phase 2 mask-cost measurement.** "Audio rides the shared encoder cache" is still the right shape, but the cache is emptier than this decision assumed. Because audio rows are *context* under the frame-causal mask, they are blind to video, and the encoder's audio rows come out with centered cos **0.047 / −0.074** against a bidirectional pass — no video conditioning at all. The second decoder pass therefore inherits no audio–video fusion and has to create all of it in 7 blocks. The fix is to stop treating audio as context and give it frame indices on its own 40 Hz clock, which keeps the mask leak-free in both directions; that promotes the "out of scope for v0" clause above into a decision that has to be made before Phase 3. See Phase 2 for the numbers and the rejected cheap alternative.
+
 ### D2 — Two products, two codebases (until proven)
 
 | Track | Code home | Purpose |
@@ -381,6 +383,8 @@ So the encoder is **blocks 0–29** — 30 blocks, empirical, against the assume
 
 **(b) Causal-mask drift — ✅ passes, and this was the axis expected to kill the port.** Isolated frame-causal masking costs almost nothing: centered cos ≥0.97 through block 45 with a single dip to 0.922 at block 46, relative L2 ≤0.035 everywhere except block 0 (0.094). Two controls make that trustworthy rather than merely convenient:
 
+> **Correction (2026-08-11), and read this before quoting the numbers below.** These were measured with a mask that restricts only *video* queries, leaving text and audio rows attending to every frame. That is frame-causal for **one block** and not for a stack — the context rows carry the future backward, and the encoder therefore has to run a stricter mask that blinds them to video (Phase 2, and protocol rule 9). The per-block *isolated* numbers here are unaffected: for a video query the two masks are identical row for row, so this paragraph measures what it says it measures. What does not follow is the sentence the reader wants to write next — that masking the *encoder* is nearly free. That is a cumulative question under the stricter mask, and it is answered separately in "Phase 2 mask cost" below.
+
 - *Does the mask reach the real forward path?* Re-run with a deliberately brutal mask — a video row sees text, audio, and only its **own** frame. Drift jumps to relative L2 0.202 and centered cos 0.869 at block 0, bottoming at 0.740 (block 46), a 2–6× larger effect than the causal mask at every block. The mask is live; the small frame-causal number is a property of the model, not dead plumbing.
 - *Why is it small?* Decompose where video queries actually spend attention: **text 0.247, audio 0.111, past 0.279, own 0.094, future 0.270**. Over a quarter of the mass does sit on future frames — but attention over video is close to uniform (own-frame mass 0.094 against a 0.092 uniform baseline: no intra-frame locality at all), and with common-mode 0.80–0.997 the value vectors are near-interchangeable. Deleting a quarter of a near-uniform average over near-identical values barely moves the output. Convenient for us, and worth remembering it is a property of a bidirectionally-trained model with massive activations, not evidence that H3 has latent causal structure.
 
@@ -457,6 +461,57 @@ Both non-trivial invariants were mutation-tested rather than trusted for being g
 - Implement video frame spans + causal mask.  
 - Encoder KV-cache for multi-frame.  
 - Tests: frame t cannot attend t+1; cache append correctness.
+
+**Mask + cache landed (2026-08-11).** `scripts/scd/scd_attention.py` (`FrameSpans`, `causal_mask`, `KVCache`, a masked/cached `attention`) plus `MiniMaxH3SCD.encode(mask=, cache=)` and `encode_chunked()`. `scripts/scd/test_scd_attention.py` is **10/10 in 1.1 s on CPU**, no weights and no GPU, on the same hidden-64 stand-in Phase 1 uses.
+
+**The finding: Phase 0's mask is frame-causal for one block and not for a stack.** That mask restricts only *video* queries; text and audio rows keep attending to every frame. Comparing the prefix of a masked full-clip run against a run in which the later frames do not exist:
+
+| blocks | video rows | context rows |
+|---|---|---|
+| 1 | 1.2e-07 (roundoff) | **5.1e-02** |
+| 2 | **3.7e-03** | — |
+| 6 | 9.0e-03 | — |
+
+(Max abs delta, float32, on the hidden-64 stand-in with 7 latent frames — a structural property, so width and weights do not enter it.) The context rows absorb the whole clip at block 1 and the video rows read them back at block 2. So the encoder's mask must **also blind the context rows to video**; under that mask the same comparison stays at 3.6e-07 for both row kinds through all 6 blocks. This is not a preference: with the leak, chunk 2's context rows are not the ones chunk 1 cached, and the KV cache is wrong in a way no shape check can see. `test_loose_mask_leaks_across_blocks` asserts the failure in both directions so the rejected mask stays tested rather than remembered (protocol rule 9).
+
+**What this does *not* invalidate.** For a video query the two masks are identical row for row, so §7 axis (b)'s **isolated per-block** drift numbers stand exactly as measured. What was overstated was reading them as a property of the masked *stack*.
+
+Design notes worth carrying forward:
+
+- **One rule covers both row kinds.** Context rows carry frame index `-1` and video rows `0..T-1`, so `visible = (k < 0) | (k <= q)` is simultaneously "context is always visible" and "context is blind to video" — the second falls out because no video key satisfies `k <= -1`.
+- **The mask never re-implements a block.** `run_block` substitutes `attn.forward` for the duration of one call and restores it in `finally`, so AdaLN modulation, the gated residuals and the MLP stay the base's own code. Phase 0's probe hand-copied that block body, which is the drift this phase exists to stop repeating.
+- **The cache stores post-RoPE keys**, the point at which they stop depending on anything a later chunk can change. `test_cache_holds_post_rope_keys` separates this from the variant that caches pre-rotation and forgets to re-rotate — which yields plausible video at the wrong positions, not garbage.
+- **Audio is context by scope, not by nature.** §4 keeps v0's audio bidirectional, so this encoder is frame-causal in *video* only. Fully causal AV needs audio spans on the 40 Hz clock — filed as a v1 item when this was written, and no longer optional once the real-weights numbers came in (see "Phase 2 mask cost" below).
+- **`encode_chunked` runs the preamble once over the whole clip**, which real AR inference cannot do — later frames do not exist yet. It is the correctness harness for the cache, not the inference driver; Phase 5's driver has to build positions incrementally.
+
+Still open, deliberately: the mask is **dense**. At 768p, S≈62k makes an `[S, S]` bool 3.8 GB, so FlexAttention `create_block_mask` is the shipping path (§6.3) — `FrameSpans.frame_index()` is already the `mask_mod` it needs, so that swap is local to `attention()`. The §8.1 chunk-reset policy is also not implemented: `KVCache` grows monotonically, which is right for a single clip and is exactly what OOMs at 10 s if anyone ships it as-is.
+
+Mutation-tested rather than trusted for being green — a mask that drops self-attention, a mask that lets video see everything, a cache that overwrites instead of appending, a cache written but never read, a one-row error in `video_start`, and an unmasked chunk: six mutants, six distinct failures.
+
+#### Phase 2 mask cost (2026-08-11) — `docs/phase2_mask_cost.json`
+
+The stack question §7 axis (b) could not answer: what the strict mask costs *cumulatively*, on real weights. `scripts/scd/phase2_mask_cost.py` scores every block's output under each mask against the **unmasked bidirectional pass at the same inputs** — isodiorama, 7 latent frames, `S=2134` = 342 context + 1792 video, NF4 base, 50 blocks, σ=0.571 and σ=0.923 on H3's own density, 229 s for both. It calls `scd_attention.causal_mask`, the mask the encoder actually runs, not a second copy written for the measurement.
+
+Centered cos throughout, using `phase0_validate`'s own definitions. This matters more here than anywhere in Phase 0 and the reason is in the last row of the table.
+
+| at block 29 (encoder output) | σ=0.571 | σ=0.923 |
+|---|---|---|
+| video centered cos — loose | 0.992 | 0.996 |
+| video centered cos — **strict** | **0.952** | **0.972** |
+| video relative L2 — loose | 0.039 | 0.043 |
+| video relative L2 — **strict** | **0.096** | **0.100** |
+| audio centered cos — loose | 0.986 | 0.968 |
+| audio centered cos — **strict** | **0.047** | **−0.074** |
+
+**Video: the correction survives, and the split point gets independent support.** Strict costs ~2.5× the relative L2 of loose and ~6× the centered-cos deficit, but 0.95–0.97 at the encoder boundary is a budget, not a wall — and the shape is better than the endpoint suggests. Under the strict mask the video curve is **flat at 0.998–0.999 from block 1 through block 25**, reaches 0.952 at 29, then falls off a cliff: 0.794 (30), 0.471 (35), 0.412 (45). The mask is nearly free over exactly the span the encoder occupies and expensive immediately past it. That knee lands on the same block as §7 axis (a)'s σ-invariance knee, from a completely independent measurement, which is the first corroboration the 29/30 split has had. Block 0 is identical under both masks to four figures (0.9446 / 0.9160), exactly as the depth-1 property predicts.
+
+**Audio: the strict mask deletes it, and the raw number hides that.** Raw cos at block 29 reads 0.980 (σ=0.571) and 0.996 (σ=0.923) — recovery, apparently, from a dip at block 1. Centered, the same rows read **0.047 and −0.074**: uncorrelated with the bidirectional reference, and at the higher σ slightly *anti*correlated. Common mode on those rows is **0.996**, so the raw cosine was measuring the shared vector and essentially nothing else. This is §7's cos-inflation artefact reproducing on a new axis, and it was one edit away from being written into this document as a finding.
+
+The number itself is not a bug — it is the strict mask's definition showing up in the output. Context rows are blind to video, audio rows *are* context (§4 keeps v0's audio bidirectional), so the encoder's audio rows see text and audio and nothing else. Zero video conditioning produces exactly this. What it costs is concrete: **the encoder cache carries no audio–video fusion, so every bit of AV sync has to be created by the decoder's 7 blocks.** §4 assumed the audio pass could read a jointly-encoded cache; it cannot.
+
+The named remedy is the one already listed as a v1 item, promoted by this measurement from an elegance to the thing that pays for sync: give audio rows **their own frame index on the 40 Hz clock** instead of `CONTEXT`. Audio at frame *f* sees video ≤ *f* and video at frame *f* sees audio ≤ *f* — causal in both directions, so no future leaks backward and the leak table above is not reopened, while audio keeps its video conditioning. The cheap alternative (let audio queries see all video, leave video queries causal) is the loose mask under another name and fails for the same reason. Decide this before Phase 3 trains anything, because it changes what the encoder cache contains.
+
+Past block 29 the two masks separate hard (video centered cos 0.63 strict vs 0.89 loose at block 49), which is a property of blocks the SCD encoder does not run and is recorded only so the curve is not mistaken for an encoder number later.
 
 ### Phase 2.5 — **Speed POC on untrained weights** (3–5 days) ← new, and it gates all training spend
 
@@ -616,6 +671,7 @@ New, from the code audit:
 | Phase 0 σ-invariance | Early layers: high cos-sim across σ; late: low |
 | Phase 0 causal drift | Early-layer features survive frame-causal masking; if not, price in a real retrain |
 | Phase 0 late-layer sparsity | Blocks 33–49 mostly intra-frame attention |
+| **Phase 2 mask cost** | ⚠️ **SPLIT RESULT.** Video passes — centered cos 0.95–0.97 at the encoder cut, flat at 0.998 through block 25, cliff at 30 (independently corroborating the split point). Audio fails — 0.047 / −0.074, the strict mask leaves the encoder's audio rows with no video conditioning at all. §5 D1 amended |
 | **Phase 2.5 Tier 0** | ✅ **PASSED** — 3.90× at 768p/10s, 5.03× at 15s (gate was ≥2×) |
 | **Phase 2.5 Tier 1** | Untrained SCD graph materially faster than stock H3 at 768p/15s; peak VRAM flat vs length |
 | Phase 3 sample | Not noise; human “coherent frame” |
@@ -632,7 +688,8 @@ New, from the code audit:
 | Priority | Action |
 |----------|--------|
 | ~~This week, $0~~ | ✅ Phase 2.5 **Tier 0** microbenchmark — **done, passed at 3.90×/5.03×** |
-| **Next, $0** | Phase 0 three-axis sweep on local hardware — the speed case is now settled, the *quality* case is not |
+| ~~Next, $0~~ | ✅ Phase 0 three-axis sweep, ✅ Phase 1 skeleton, ✅ Phase 2 mask + cache — all local, all $0 |
+| **Next, $0** | Decide the audio row class (context vs its own 40 Hz frame index) — Phase 2 showed it changes what the encoder cache contains, so it has to land before Phase 3 trains against that cache |
 | **Now** | Keep shipping **H3 LoRAs** (still/short clip) + use **LTX SCD** for long AR if needed |
 | **Research bet** | Fund **Phases 1–4** only after Tier 0 and Phase 0 both pass |
 | **Do not** | Start Comfy UI / full AR before the hypothesis and speed tests |

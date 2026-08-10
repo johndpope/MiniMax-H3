@@ -40,6 +40,8 @@ REQUIRED_VALIDATE = ["sigma_ref", "sigma_test", "n_blocks", "sigma_centered_cos_
                      "common_mode_ratio", "attention_breakdown"]
 REQUIRED_LEAVEOUT = ["sigmas", "n_blocks", "relative_cost", "mean_rel_cost_thirds",
                      "baseline_loss_by_sigma", "leaveout_loss_by_sigma"]
+REQUIRED_MASK_COST = ["clip", "latent_t", "sigmas", "latent_hw", "encoder_depth", "n_blocks",
+                      "base_quant", "checkpoint", "git_sha", "by_sigma"]
 
 
 def on_grid(latent_t):
@@ -102,9 +104,40 @@ def check_summary_fresh(path, p, errs):
                     f"{only_ledger[:5]} — re-run `run_phase0.py --summarize-only`")
 
 
+def check_mask_cost(path, p, errs):
+    """Phase 2's strict-vs-loose curves: one value per block, per mask, per sigma.
+
+    The comparison is only meaningful if both masks were run over the same stack, so a curve that
+    is not n_blocks long means one of them was truncated and the deltas are between different
+    blocks — which reads as a finding rather than as a bug.
+    """
+    n = p.get("n_blocks")
+    for sigma, by_mask in p.get("by_sigma", {}).items():
+        for mask in ("strict", "loose"):
+            if mask not in by_mask:
+                errs.append(f"{path}: sigma {sigma} has no {mask!r} curve to compare against")
+                continue
+            for k, v in by_mask[mask].items():
+                if n and len(v) != n:
+                    errs.append(f"{path}: by_sigma[{sigma}][{mask}][{k}] has {len(v)} entries, "
+                                f"expected n_blocks={n}")
+    depth = p.get("encoder_depth")
+    if depth is not None and n is not None and not 0 < depth <= n:
+        errs.append(f"{path}: encoder_depth {depth} outside 1..{n}")
+
+    # The flat `*_at_encoder` / `*_at_last` lists are what claims index into, one entry per sigma.
+    # A stale one — the file re-run with a different sigma grid, `--flatten-only` not re-run —
+    # would silently move every claim onto the wrong sigma.
+    n_sigma = len(p.get("sigmas", []))
+    for k, v in p.items():
+        if k.startswith(("strict_", "loose_")) and isinstance(v, list) and len(v) != n_sigma:
+            errs.append(f"{path}: {k} has {len(v)} entries for {n_sigma} sigmas — re-run "
+                        f"`phase2_mask_cost.py --flatten-only {path}`")
+
+
 def check_result_files(errs, warns):
     seen = 0
-    for path in sorted(glob.glob("docs/phase0_*.json")):
+    for path in sorted(glob.glob("docs/phase0_*.json") + glob.glob("docs/phase2_*.json")):
         p = json.load(open(path))
         if not isinstance(p, dict):
             continue
@@ -127,6 +160,10 @@ def check_result_files(errs, warns):
             sig = [p[k] for k in ("sigma_ref", "sigma_test") if k in p]
             check_config(path, p.get("latent_t"), sig, errs, warns)
             check_lengths(path, p, REQUIRED_VALIDATE, errs)
+        elif "by_sigma" in p:
+            missing = [k for k in REQUIRED_MASK_COST if k not in p]
+            check_config(path, p.get("latent_t"), p.get("sigmas", []), errs, warns)
+            check_mask_cost(path, p, errs)
         elif "verdict" in p and "config" in p:
             missing = []
             cfg = p["config"]

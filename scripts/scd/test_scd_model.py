@@ -234,9 +234,11 @@ def main():
         try:
             fn(stock, scd, inputs, consumed)
             print(f"ok    {fn.__name__}")
-        except AssertionError as e:
+        except Exception as e:
+            # Not just AssertionError: a shape or attribute break should be reported as one
+            # failing case, not abort the run and hide the others.
             failures += 1
-            print(f"FAIL  {fn.__name__}: {e}")
+            print(f"FAIL  {fn.__name__}: {type(e).__name__}: {e}")
 
     print(f"\n{len(CASES) - failures}/{len(CASES)} passed")
     sys.exit(1 if failures else 0)

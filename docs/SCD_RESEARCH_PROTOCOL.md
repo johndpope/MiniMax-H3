@@ -14,6 +14,7 @@ similarity on the residual stream. H3's residual stream is 91–99.7% a single s
 (`‖mean row‖ / mean‖row‖`, against 0.024 for uncorrelated rows), so cos-sim between two runs
 reports ~1.0 even when the informative parts are unrelated. This manufactured the headline that
 σ-invariance *rises* with depth — backwards from what SCD needs, which should have been the tell.
+It then did it a second time, in Phase 2, in a script written after the rule against it (rule 10).
 
 **2. The measurement sat off-distribution.** σ-invariance used σ=0 as its reference and the
 leave-one-out probe used a flat 0.1–0.9 grid. H3 draws training σ as `shift_sigma(u, 12)` with *u*
@@ -130,7 +131,47 @@ and before reading any knee, check that its frac spread is small. A knee from a 
 plateau is not a late knee. Where a split has to be conservative, the widest on-distribution pair is
 both the most demanding question and the best-resolved one; prefer it.
 
-### 9. Distinguish "the frozen base does not do this" from "this cannot work"
+### 9. A structural property verified at depth 1 has not been verified
+
+Phase 0's mask self-test asserted the right property — under a frame-causal mask, frame 0's rows
+are bit-identical to a run in which later frames do not exist — and asserted it through **one**
+block, where it held at 1.2e-07. Through two blocks the same comparison is 3.7e-03, because the
+mask restricted only *video* queries: text and audio rows absorbed every frame at layer 1, and
+layer 2 read them back. The mask was frame-causal and the stack was not, and nothing in the axis
+(b) curve could have shown it.
+
+The general shape: a property that composes is a property of the *composition*, and a test that
+instantiates one copy cannot distinguish "holds" from "holds once". Phase 1 had the same smell from
+the other side — `test_more_instances_than_base` exists because the obvious identity test was
+checkable on paper and impossible in fact.
+
+So: for anything that will be stacked, cached, or chunked, assert the invariant at N=1 **and** at
+N>1, and assert the N>1 *failure* of the variant you rejected, so the rejection stays tested rather
+than remembered. `test_scd_attention.py` pins both directions.
+
+### 10. On this model, cosine is quoted centered, with its common mode beside it
+
+H3's residual stream is very nearly a single shared vector — `‖mean row‖ / mean‖row‖` runs 0.80–0.997
+on video rows and 0.87–0.999 on audio rows. Raw cos-sim on rows that are 99% a common vector reports
+~1.0 for two runs whose informative parts are unrelated, so on this model it is not a weak metric,
+it is a broken one.
+
+This has now produced two false findings. It manufactured the first probe's headline — σ-invariance
+*rising* with depth, which is backwards from what SCD needs. Then, after a whole section of the
+design doc was written about that, it did it again in Phase 2: the encoder's audio rows scored raw
+cos **0.980** under the strict mask, read as "audio dips early and recovers", and were one edit from
+being written up that way. Centered, the same rows are **0.047** — no recovery, no signal, common
+mode 0.996. The correct reading is the opposite of the one the raw number invited.
+
+The lesson is not "be careful with cosine", which is what was concluded the first time and did not
+work. It is that a metric known to be broken here should not be *available* in a form that can be
+quoted by accident. So: any script scoring rows of this stream emits centered cos and the common
+mode in the same dict, from `phase0_validate`'s definitions rather than a local copy, and centers on
+the reference run's mean over **the same row set being scored** — video and audio have separate AdaLN
+modulation and sit in different parts of the space, so a shared mean leaves a bias in each. Raw cos
+may be kept alongside; it may not be the number in the prose.
+
+### 11. Distinguish "the frozen base does not do this" from "this cannot work"
 
 SCD full fine-tunes for 55K steps to *teach* the model to rewire. Zero-shot measurements on frozen
 H3 are budget estimates — how far the base sits from the target wiring and which half has to move —

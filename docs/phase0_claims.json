@@ -1,337 +1,465 @@
 [
-  {
-    "id": "text-plateau-13",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 13,
-    "expected": 0.975,
-    "tol": 0.001
+ {
+  "id": "text-plateau-13",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 13,
+  "expected": 0.975,
+  "tol": 0.001
+ },
+ {
+  "id": "text-28",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 28,
+  "expected": 0.96,
+  "tol": 0.001
+ },
+ {
+  "id": "text-29",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 29,
+  "expected": 0.91,
+  "tol": 0.001
+ },
+ {
+  "id": "text-knee-30",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 30,
+  "expected": 0.777,
+  "tol": 0.001
+ },
+ {
+  "id": "text-31",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 31,
+  "expected": 0.677,
+  "tol": 0.001
+ },
+ {
+  "id": "text-49",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos_text",
+  "index": 49,
+  "expected": 0.037,
+  "tol": 0.001
+ },
+ {
+  "id": "video-0",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos",
+  "index": 0,
+  "expected": 0.226,
+  "tol": 0.001
+ },
+ {
+  "id": "video-plateau-1",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos",
+  "index": 1,
+  "expected": 0.807,
+  "tol": 0.001
+ },
+ {
+  "id": "video-29",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos",
+  "index": 29,
+  "expected": 0.657,
+  "tol": 0.001
+ },
+ {
+  "id": "video-knee-30",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos",
+  "index": 30,
+  "expected": 0.402,
+  "tol": 0.001
+ },
+ {
+  "id": "video-49",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "sigma_centered_cos",
+  "index": 49,
+  "expected": 0.082,
+  "tol": 0.001
+ },
+ {
+  "id": "causal-worst-46",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "causal_centered_cos",
+  "index": 46,
+  "expected": 0.922,
+  "tol": 0.001
+ },
+ {
+  "id": "causal-rell2-0",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "causal_rel_l2",
+  "index": 0,
+  "expected": 0.094,
+  "tol": 0.001
+ },
+ {
+  "id": "ownframe-rell2-0",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "own_frame_rel_l2",
+  "index": 0,
+  "expected": 0.202,
+  "tol": 0.001
+ },
+ {
+  "id": "ownframe-min-46",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "own_frame_centered_cos",
+  "index": 46,
+  "expected": 0.74,
+  "tol": 0.001
+ },
+ {
+  "id": "commonmode-0",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "common_mode_ratio",
+  "index": 0,
+  "expected": 0.918,
+  "tol": 0.001
+ },
+ {
+  "id": "commonmode-49",
+  "file": "docs/phase0_validation_ondist.json",
+  "key": "common_mode_ratio",
+  "index": 49,
+  "expected": 0.997,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-block-0",
+  "file": "docs/phase0_leaveout.json",
+  "key": "relative_cost",
+  "index": 0,
+  "expected": 0.964,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-block-1",
+  "file": "docs/phase0_leaveout.json",
+  "key": "relative_cost",
+  "index": 1,
+  "expected": 0.554,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-block-48",
+  "file": "docs/phase0_leaveout.json",
+  "key": "relative_cost",
+  "index": 48,
+  "expected": 0.045,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-block-49",
+  "file": "docs/phase0_leaveout.json",
+  "key": "relative_cost",
+  "index": 49,
+  "expected": 0.821,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-third-early",
+  "file": "docs/phase0_leaveout.json",
+  "key": "mean_rel_cost_thirds",
+  "index": 0,
+  "expected": 0.0948,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-third-middle",
+  "file": "docs/phase0_leaveout.json",
+  "key": "mean_rel_cost_thirds",
+  "index": 1,
+  "expected": 0.0004,
+  "tol": 0.001
+ },
+ {
+  "id": "loo-third-late",
+  "file": "docs/phase0_leaveout.json",
+  "key": "mean_rel_cost_thirds",
+  "index": 2,
+  "expected": 0.0471,
+  "tol": 0.001
+ },
+ {
+  "id": "knee-text-frac-spread",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_text_frac_spread",
+  "expected": 2,
+  "tol": 0
+ },
+ {
+  "id": "knee-video-frac-spread",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_video_frac_spread",
+  "expected": 5,
+  "tol": 0
+ },
+ {
+  "id": "knee-text-frac-070",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_text_by_frac",
+  "index": 0,
+  "expected": 31,
+  "tol": 0
+ },
+ {
+  "id": "knee-text-frac-095",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_text_by_frac",
+  "index": 5,
+  "expected": 29,
+  "tol": 0
+ },
+ {
+  "id": "knee-video-frac-070",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_video_by_frac",
+  "index": 0,
+  "expected": 30,
+  "tol": 0
+ },
+ {
+  "id": "knee-video-frac-095",
+  "file": "docs/phase0_summary.json",
+  "key": "knee_video_by_frac",
+  "index": 5,
+  "expected": 25,
+  "tol": 0
+ },
+ {
+  "id": "ledger-n",
+  "file": "docs/phase0_summary.json",
+  "key": "n",
+  "expected": 3,
+  "tol": 0
+ },
+ {
+  "id": "geom640-seq-len",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama640"
   },
-  {
-    "id": "text-28",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 28,
-    "expected": 0.96,
-    "tol": 0.001
+  "key": "seq_len",
+  "expected": 3142,
+  "tol": 0
+ },
+ {
+  "id": "geom512-seq-len",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama",
+   "sigma_ref": 0.5714285714,
+   "sigma_test": 0.9908256881
   },
-  {
-    "id": "text-29",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 29,
-    "expected": 0.91,
-    "tol": 0.001
+  "key": "seq_len",
+  "expected": 2134,
+  "tol": 0
+ },
+ {
+  "id": "geom640-knee-text",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama640"
   },
-  {
-    "id": "text-knee-30",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 30,
-    "expected": 0.777,
-    "tol": 0.001
+  "key": "knee_text",
+  "expected": 30,
+  "tol": 0
+ },
+ {
+  "id": "geom640-knee-video",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama640"
   },
-  {
-    "id": "text-31",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 31,
-    "expected": 0.677,
-    "tol": 0.001
+  "key": "knee_video",
+  "expected": 29,
+  "tol": 0
+ },
+ {
+  "id": "sigma-knee-wide-08",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama",
+   "sigma_ref": 0.5714285714,
+   "sigma_test": 0.9908256881
   },
-  {
-    "id": "text-49",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos_text",
-    "index": 49,
-    "expected": 0.037,
-    "tol": 0.001
+  "key": "knee_text",
+  "expected": 30,
+  "tol": 0
+ },
+ {
+  "id": "sigma-knee-wide-04",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama",
+   "sigma_ref": 0.5714285714,
+   "sigma_test": 0.9230769231
   },
-  {
-    "id": "video-0",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos",
-    "index": 0,
-    "expected": 0.226,
-    "tol": 0.001
+  "key": "knee_text",
+  "expected": 31,
+  "tol": 0
+ },
+ {
+  "id": "sigma-knee-narrow-hi",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama",
+   "sigma_ref": 0.9655172414,
+   "sigma_test": 0.9908256881
   },
-  {
-    "id": "video-plateau-1",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos",
-    "index": 1,
-    "expected": 0.807,
-    "tol": 0.001
+  "key": "knee_text",
+  "expected": 35,
+  "tol": 0
+ },
+ {
+  "id": "sigma-knee-narrow-mid",
+  "file": "docs/phase0_ledger.jsonl",
+  "row": {
+   "clip": "isodiorama",
+   "sigma_ref": 0.8372093023,
+   "sigma_test": 0.9230769231
   },
-  {
-    "id": "video-29",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos",
-    "index": 29,
-    "expected": 0.657,
-    "tol": 0.001
-  },
-  {
-    "id": "video-knee-30",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos",
-    "index": 30,
-    "expected": 0.402,
-    "tol": 0.001
-  },
-  {
-    "id": "video-49",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "sigma_centered_cos",
-    "index": 49,
-    "expected": 0.082,
-    "tol": 0.001
-  },
-  {
-    "id": "causal-worst-46",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "causal_centered_cos",
-    "index": 46,
-    "expected": 0.922,
-    "tol": 0.001
-  },
-  {
-    "id": "causal-rell2-0",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "causal_rel_l2",
-    "index": 0,
-    "expected": 0.094,
-    "tol": 0.001
-  },
-  {
-    "id": "ownframe-rell2-0",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "own_frame_rel_l2",
-    "index": 0,
-    "expected": 0.202,
-    "tol": 0.001
-  },
-  {
-    "id": "ownframe-min-46",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "own_frame_centered_cos",
-    "index": 46,
-    "expected": 0.74,
-    "tol": 0.001
-  },
-  {
-    "id": "commonmode-0",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "common_mode_ratio",
-    "index": 0,
-    "expected": 0.918,
-    "tol": 0.001
-  },
-  {
-    "id": "commonmode-49",
-    "file": "docs/phase0_validation_ondist.json",
-    "key": "common_mode_ratio",
-    "index": 49,
-    "expected": 0.997,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-block-0",
-    "file": "docs/phase0_leaveout.json",
-    "key": "relative_cost",
-    "index": 0,
-    "expected": 0.964,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-block-1",
-    "file": "docs/phase0_leaveout.json",
-    "key": "relative_cost",
-    "index": 1,
-    "expected": 0.554,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-block-48",
-    "file": "docs/phase0_leaveout.json",
-    "key": "relative_cost",
-    "index": 48,
-    "expected": 0.045,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-block-49",
-    "file": "docs/phase0_leaveout.json",
-    "key": "relative_cost",
-    "index": 49,
-    "expected": 0.821,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-third-early",
-    "file": "docs/phase0_leaveout.json",
-    "key": "mean_rel_cost_thirds",
-    "index": 0,
-    "expected": 0.0948,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-third-middle",
-    "file": "docs/phase0_leaveout.json",
-    "key": "mean_rel_cost_thirds",
-    "index": 1,
-    "expected": 0.0004,
-    "tol": 0.001
-  },
-  {
-    "id": "loo-third-late",
-    "file": "docs/phase0_leaveout.json",
-    "key": "mean_rel_cost_thirds",
-    "index": 2,
-    "expected": 0.0471,
-    "tol": 0.001
-  },
-  {
-    "id": "knee-text-frac-spread",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_text_frac_spread",
-    "expected": 2,
-    "tol": 0
-  },
-  {
-    "id": "knee-video-frac-spread",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_video_frac_spread",
-    "expected": 5,
-    "tol": 0
-  },
-  {
-    "id": "knee-text-frac-070",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_text_by_frac",
-    "index": 0,
-    "expected": 31,
-    "tol": 0
-  },
-  {
-    "id": "knee-text-frac-095",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_text_by_frac",
-    "index": 5,
-    "expected": 29,
-    "tol": 0
-  },
-  {
-    "id": "knee-video-frac-070",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_video_by_frac",
-    "index": 0,
-    "expected": 30,
-    "tol": 0
-  },
-  {
-    "id": "knee-video-frac-095",
-    "file": "docs/phase0_summary.json",
-    "key": "knee_video_by_frac",
-    "index": 5,
-    "expected": 25,
-    "tol": 0
-  },
-  {
-    "id": "ledger-n",
-    "file": "docs/phase0_summary.json",
-    "key": "n",
-    "expected": 3,
-    "tol": 0
-  },
-  {
-    "id": "geom640-seq-len",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama640"
-    },
-    "key": "seq_len",
-    "expected": 3142,
-    "tol": 0
-  },
-  {
-    "id": "geom512-seq-len",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama",
-      "sigma_ref": 0.5714285714,
-      "sigma_test": 0.9908256881
-    },
-    "key": "seq_len",
-    "expected": 2134,
-    "tol": 0
-  },
-  {
-    "id": "geom640-knee-text",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama640"
-    },
-    "key": "knee_text",
-    "expected": 30,
-    "tol": 0
-  },
-  {
-    "id": "geom640-knee-video",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama640"
-    },
-    "key": "knee_video",
-    "expected": 29,
-    "tol": 0
-  },
-  {
-    "id": "sigma-knee-wide-08",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama",
-      "sigma_ref": 0.5714285714,
-      "sigma_test": 0.9908256881
-    },
-    "key": "knee_text",
-    "expected": 30,
-    "tol": 0
-  },
-  {
-    "id": "sigma-knee-wide-04",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama",
-      "sigma_ref": 0.5714285714,
-      "sigma_test": 0.9230769231
-    },
-    "key": "knee_text",
-    "expected": 31,
-    "tol": 0
-  },
-  {
-    "id": "sigma-knee-narrow-hi",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama",
-      "sigma_ref": 0.9655172414,
-      "sigma_test": 0.9908256881
-    },
-    "key": "knee_text",
-    "expected": 35,
-    "tol": 0
-  },
-  {
-    "id": "sigma-knee-narrow-mid",
-    "file": "docs/phase0_ledger.jsonl",
-    "row": {
-      "clip": "isodiorama",
-      "sigma_ref": 0.8372093023,
-      "sigma_test": 0.9230769231
-    },
-    "key": "knee_text",
-    "expected": 37,
-    "tol": 0
-  }
+  "key": "knee_text",
+  "expected": 37,
+  "tol": 0
+ },
+ {
+  "id": "p2-strict-ccos-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_ccos_video_at_encoder",
+  "index": 0,
+  "expected": 0.952,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-ccos-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_ccos_video_at_encoder",
+  "index": 1,
+  "expected": 0.972,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-ccos-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_ccos_video_at_encoder",
+  "index": 0,
+  "expected": 0.992,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-ccos-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_ccos_video_at_encoder",
+  "index": 1,
+  "expected": 0.996,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-rell2-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_rel_l2_video_at_encoder",
+  "index": 0,
+  "expected": 0.096,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-rell2-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_rel_l2_video_at_encoder",
+  "index": 1,
+  "expected": 0.1,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-rell2-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_rel_l2_video_at_encoder",
+  "index": 0,
+  "expected": 0.039,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-rell2-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_rel_l2_video_at_encoder",
+  "index": 1,
+  "expected": 0.043,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-ccos-audio-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_ccos_audio_at_encoder",
+  "index": 0,
+  "expected": 0.047,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-ccos-audio-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_ccos_audio_at_encoder",
+  "index": 1,
+  "expected": -0.074,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-ccos-audio-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_ccos_audio_at_encoder",
+  "index": 0,
+  "expected": 0.986,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-loose-ccos-audio-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_ccos_audio_at_encoder",
+  "index": 1,
+  "expected": 0.968,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-raw-cos-audio-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_cos_audio_at_encoder",
+  "index": 0,
+  "expected": 0.98,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-raw-cos-audio-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_cos_audio_at_encoder",
+  "index": 1,
+  "expected": 0.996,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-strict-ccos-video-last-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "strict_ccos_video_at_last",
+  "index": 0,
+  "expected": 0.63,
+  "tol": 0.005
+ },
+ {
+  "id": "p2-loose-ccos-video-last-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "loose_ccos_video_at_last",
+  "index": 0,
+  "expected": 0.89,
+  "tol": 0.005
+ }
 ]

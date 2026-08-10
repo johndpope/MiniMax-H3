@@ -38,13 +38,14 @@ jobs:
       - name: Lint
         run: ruff check scripts/scd
 
-      # The probes and the Phase 1 model import fizgig and torch, neither of which is available
-      # here (fizgig is a local source tree, not a package), so a real import would fail for
-      # uninteresting reasons. Compiling catches syntax and indentation breakage, which is what
-      # actually goes wrong when these are edited without being run.
+      # The probes and the Phase 1/2 modules import fizgig and torch, neither of which is
+      # available here (fizgig is a local source tree, not a package), so a real import would fail
+      # for uninteresting reasons. Compiling catches syntax and indentation breakage, which is
+      # what actually goes wrong when these are edited without being run.
       #
-      # scripts/scd/test_scd_model.py therefore does NOT run here. It is CPU-only and finishes in
-      # ~1.2 s, so it is cheap to run locally, and the design doc records its result:
-      #     python3 scripts/scd/test_scd_model.py
+      # The two unit suites therefore do NOT run here. Both are CPU-only and finish in ~1.2 s, so
+      # they are cheap to run locally, and the design doc records their results:
+      #     python3 scripts/scd/test_scd_model.py        # Phase 1 composition
+      #     python3 scripts/scd/test_scd_attention.py    # Phase 2 mask + KV cache
       - name: Byte-compile probes
         run: python3 -m compileall -q scripts/scd

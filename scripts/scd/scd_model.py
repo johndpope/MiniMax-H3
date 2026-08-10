@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Phase 1 skeleton: compose H3's 50 DiT blocks into an SCD encoder prefix + decoder.
+"""Compose H3's 50 DiT blocks into an SCD encoder prefix + decoder (Phase 1), and run the encoder
+frame-causally with a KV cache (Phase 2 — the mask and cache themselves live in `scd_attention`).
 
 SCD's decoder is a RE-COMPOSITION, not the encoder's tail (§2 of the design doc). The paper takes
 WAN's 30 layers to encoder 0-24 plus decoder {0-4} u {25-29} — 35 layer instances from a 30-layer
@@ -16,24 +17,33 @@ What this module deliberately does NOT do
 No training, and no re-implementation of the base's ~100-line input packing. That preamble decides
 segment order, modulation rows, audio row count and RoPE positions, and a second copy of it would
 drift from the real one exactly the way Phase 0's hand-transcribed numbers drifted from their JSON.
-`encode()` instead captures the base's own block arguments through a forward hook, so whatever the
-preamble does, the encoder and decoder see the same thing.
+`preamble()` instead captures the base's own block arguments through a forward hook, so whatever
+the preamble does, the encoder and decoder see the same thing.
 
 There is also no pixel output path. The final layer needs `video_t_index`, which the preamble
 derives from a sorted-unique over the distinct timesteps; reproducing that here would be the same
-drift risk for no Phase 1 benefit, and Phase 2's causal mask rewrites this graph regardless.
+drift risk for no benefit until there is something to decode into pixels.
 
 Usage:
     from scd_model import MiniMaxH3SCD
     scd = MiniMaxH3SCD(base)                     # consumes `base`
     h, ctx = scd.encode(video_latent=z, t=t, text_embeds=te)
     h = scd.decode(h, ctx)
+
+    # frame-causal, chunked, carrying an encoder KV cache
+    h, ctx, cache = scd.encode_chunked(4, video_latent=z, t=t, text_embeds=te)
 """
 
 import copy
 
 import torch
 from torch import nn
+
+from scd_attention import FrameSpans, KVCache, causal_mask, run_block
+
+
+class _PreambleDone(Exception):
+    """Raised from the block-0 hook to unwind out of the base forward once packing is done."""
 
 # Encoder is a prefix; the knee sits at block 30, so 0..29.
 DEFAULT_ENCODER_DEPTH = 30
@@ -86,29 +96,80 @@ class MiniMaxH3SCD(nn.Module):
         the reason the original identity test (`concat(enc, dec) == base`) is impossible."""
         return len(self.base.blocks) + len(self.decoder_blocks)
 
-    def encode(self, **forward_kwargs):
-        """Run the base preamble and the encoder prefix. Returns (h, ctx).
+    def preamble(self, **forward_kwargs):
+        """Run the base's input packing and stop at the first block. Returns (h, ctx).
 
         `ctx` is `(t_emb, mod_row, cos, sin)` — the per-block arguments the base built, captured
         from its own first block rather than recomputed, so this cannot drift from the preamble.
+        The hook raises to abort: the preamble is what we want and the 50 blocks behind it are
+        not, and at 768p running them to throw the result away is minutes of GPU time.
         """
-        blocks = self.base.blocks
         cap = {}
 
-        def grab_ctx(_module, args):
-            cap["ctx"] = tuple(args[1:])
+        def grab(_module, args):
+            cap["h"], cap["ctx"] = args[0], tuple(args[1:])
+            raise _PreambleDone
 
-        def grab_h(_module, _args, out):
-            cap["h"] = out
-
-        h_pre = blocks[0].register_forward_pre_hook(grab_ctx)
-        h_post = blocks[-1].register_forward_hook(grab_h)
+        handle = self.base.blocks[0].register_forward_pre_hook(grab)
         try:
             self.base(**forward_kwargs)
+        except _PreambleDone:
+            pass
         finally:
-            h_pre.remove()
-            h_post.remove()
+            handle.remove()
         return cap["h"], cap["ctx"]
+
+    def spans(self, video_latent, seq_len):
+        """`FrameSpans` for a packed sequence of `seq_len` rows holding this video latent."""
+        _, _, latent_t, lat_h, lat_w = video_latent.shape
+        ph, pw = self.base.patch_size[1], self.base.patch_size[2]
+        return FrameSpans(seq_len, latent_t, (lat_h // ph) * (lat_w // pw))
+
+    def encode(self, *, mask=None, cache=None, **forward_kwargs):
+        """Run the base preamble and the encoder prefix. Returns (h, ctx).
+
+        With `mask=None, cache=None` every block runs its own unmodified forward, so the encoder
+        is the base's first `encoder_depth` blocks exactly — `test_prefix_parity` holds by
+        construction rather than by the masked path happening to be equivalent.
+        """
+        h, ctx = self.preamble(**forward_kwargs)
+        for i, block in enumerate(self.encoder_blocks):
+            h = run_block(block, h, ctx, mask=mask, cache=None if cache is None else cache[i])
+        return h, ctx
+
+    def encode_chunked(self, chunk_frames, **forward_kwargs):
+        """Encode frame-causally in chunks of `chunk_frames`, carrying a KV cache. Returns
+        (h, ctx, cache), where `h` is the full sequence reassembled.
+
+        The first chunk carries the context rows; later chunks are video rows only, and read the
+        earlier rows out of the cache. Under the strict mask this is not an approximation of a
+        single masked pass, it is the same arithmetic in a different order, which is what
+        `test_chunked_matches_full` asserts.
+
+        The preamble runs ONCE, over the whole clip. Real AR inference cannot do that — later
+        frames do not exist yet — so this is the correctness harness for the cache, not the
+        inference driver. That driver is Phase 5's, and it must build positions incrementally.
+        """
+        h, ctx = self.preamble(**forward_kwargs)
+        sp = self.spans(forward_kwargs["video_latent"], h.shape[0])
+        frames = sp.frame_index(h.device)
+        cache = KVCache(len(self.encoder_blocks))
+        t_emb, mod_row, cos, sin = ctx
+
+        out = []
+        start = 0
+        while start < sp.latent_t:
+            stop = min(start + chunk_frames, sp.latent_t)
+            rows = slice(0, sp.rows_for_frames(0, stop).stop) if start == 0 \
+                else sp.rows_for_frames(start, stop)
+            chunk_ctx = (t_emb, mod_row[rows], cos[rows], sin[rows])
+            m = causal_mask(frames[rows], frames[:rows.stop])
+            x = h[rows]
+            for i, block in enumerate(self.encoder_blocks):
+                x = run_block(block, x, chunk_ctx, mask=m, cache=cache[i])
+            out.append(x)
+            start = stop
+        return torch.cat(out, dim=0), ctx, cache
 
     def decode(self, h, ctx):
         """Run the decoder re-composition over encoder output. Same block signature as the base."""
