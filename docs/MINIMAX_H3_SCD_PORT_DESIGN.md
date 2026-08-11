@@ -745,6 +745,18 @@ The windowed encoder is **not measurably slower — marginally faster**, and the
 
 **1.26× on the frame, ~18% off the speedup at N=30, and nothing on VRAM.** So the honest headline is a range whose width is a design decision that has not been made: **2.5–3.2× at N=30**, depending on whether the decoder sees text directly. The case for dropping text is that the decoder's conditioning half *is* encoder output, which already cross-attended to it — the text is not absent, it is compressed. The case for keeping it is that §6.2 and CastleHill both do, and that CFG at inference is conventionally applied where the text embedding enters. Nothing measured so far decides it, and the deciding evidence is a quality comparison that only exists after Phase 3 trains both. Until then every ratio in this section should be read as the top of that range, not as the number.
 
+#### `decode_frame` shipped, and the shift is not the safeguard it reads as (2026-08-11)
+
+`scd_model.decoder_frame_input` / `decode_frame` build and run one frame's token_concat pass: `[text? | enc_feat_{f-1} | noisy_f]`, returning the target frame's rows only. Two preambles are needed, because the two halves sit at different timesteps — context is the encoder's output over clean latents, target is noise at σ — and the base packs one video timestep per forward. Running the base's own packer twice and gathering rows avoids re-deriving the (timestep, modality) table by hand, which is the drift `preamble` exists to prevent. Retiming a row is then `mod_row % MODALITY_NUM + new_index * MODALITY_NUM`, reading the tag back out of the captured `mod_row` rather than rebuilding it, so segment layout still comes from the base and only the timestep axis is ours.
+
+**The finding is that §6.2's "shift features by 1 frame" is not, on its own, what stops the leak.** Written as a standalone safeguard it reads as one: frame `f` conditions on `f-1`, so it never sees its own clean latent. That is false whenever the encoder is bidirectional. `encode()` runs the prefix unmasked, and its frame `f-1` rows have already attended to frame `f`, so the context half hands the decoder the clean target anyway — one hop further round, and invisible to any test that checks row indices. `test_decoder_context_cannot_see_its_own_frame` perturbs frame `f`'s **clean** latent and asserts frame `f`'s decoder output does not move; it fails against `encode` and passes against `encode_chunked`. So the shift and the frame-causal mask are one mechanism with two halves, and Phase 3's train loop must draw its encoder features from the chunked path even when the whole clip is in memory and the unmasked one would be faster.
+
+Frame 0's context half is zeros. Conditioning it on its own encoder feature is the leak above in its purest form, and dropping the half instead would make frame 0 a different shape from every other frame and recompile the decoder for it.
+
+Two knobs are deliberately left undecided, both because nothing measured picks between them: `media_start` (whether text and ref rows join the pack — 1.26× on the frame, see above) and `duplicate_pos` (whether the context half takes the target frame's RoPE rows, as CastleHill's `_duplicate_pe` does and as Tier 1 timed, or its own).
+
+Five cases in `test_scd_model.py`, mutation-checked: removing the shift, retiming the context to the noisy step, letting frame 0 read its own encoder rows, and taking the text prefix from encoder output are each caught, each by the intended case.
+
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
 - `forward_decoder_per_frame` + Fizgig-like LoRA train on small iso set (e.g. 20–50 clips @ **512**, short T).  

@@ -230,6 +230,91 @@ class MiniMaxH3SCD(nn.Module):
             h = block(h, *ctx)
         return h
 
+    def decoder_frame_input(self, enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
+                            media_start=None, duplicate_pos=True):
+        """Build one frame's token_concat decoder input: `[text? | enc_feat_{f-1} | noisy_f]`.
+
+        Two preambles are needed because the two halves sit at DIFFERENT timesteps — the context
+        is the encoder's output over clean latents, the target is noise at sigma — and the base
+        packs one video timestep per forward. Running its own packer twice and gathering rows is
+        the only way to get both without re-deriving the (timestep, modality) table by hand, which
+        is the drift `preamble` exists to prevent.
+
+        AdaLN indexes `shift[mod_row]` with `mod_row = t_index * MODALITY_NUM + tag`, so retiming
+        a row to a different timestep is `mod_row % MODALITY_NUM + new_index * MODALITY_NUM`. The
+        tag is read back out of the captured `mod_row` rather than rebuilt, so the segment layout
+        still comes from the base and only the timestep axis is ours.
+
+        `frame` 0 has no predecessor and its context half is zeros. The alternative that suggests
+        itself -- let frame 0 condition on its own encoder feature -- is the leak this shift exists
+        to prevent, since that feature saw frame 0's CLEAN latent. Dropping the half instead would
+        make frame 0 a different shape from every other frame and recompile the decoder for it.
+
+        `media_start` is `pack["media_start"]` to prepend the text and ref rows, or None/0 to
+        leave them out. It is a parameter rather than a default because the two cost 1.26x apart
+        on the decoder frame (~18% of the N=30 speedup) and nothing measured picks between them:
+        the context half is encoder output that already attended to text, so the text is
+        compressed rather than absent. Only a post-training quality comparison decides it.
+
+        `duplicate_pos` gives the context half the target frame's RoPE rows rather than its own,
+        which is what CastleHill's `_duplicate_pe` does and what Tier 1 timed. False gives it
+        frame f-1's real positions, so the decoder sees a genuine two-frame layout instead of two
+        overlaid ones. Untested against quality either way -- it is a knob, not a default.
+        """
+        mm = sys.modules[type(self.base).__module__]
+        r, lo = spans.frame_rows, spans.video_start
+        if not 0 <= frame < spans.latent_t:
+            raise ValueError(f"frame {frame} outside 0..{spans.latent_t - 1}")
+
+        c_t_emb, c_mod, _, _ = clean_ctx
+        n_t_emb, n_mod, n_cos, n_sin = noisy_ctx
+        # One table holding both timesteps: clean rows index the first half, noisy the second.
+        # `_time_embedding` already ran for each, so this is a concat rather than a third call --
+        # and it keeps whatever the pruned-AdaLN path did to those rows intact.
+        t_emb = torch.cat([c_t_emb, n_t_emb])
+        shift = c_t_emb.shape[0]
+
+        tgt = torch.arange(lo + frame * r, lo + (frame + 1) * r, device=noisy_h.device)
+        x = [noisy_h[tgt]]
+        mod = [n_mod[tgt] + shift * mm.MODALITY_NUM]
+        cos, sin = [n_cos[tgt]], [n_sin[tgt]]
+
+        if frame == 0:
+            ctx_rows = tgt                              # positions/tags only; content is zeroed
+            cond = torch.zeros_like(noisy_h[tgt])
+        else:
+            ctx_rows = tgt - r
+            cond = enc[ctx_rows]
+        pos_rows = tgt if duplicate_pos else ctx_rows
+        x.insert(0, cond)
+        mod.insert(0, c_mod[ctx_rows])
+        cos.insert(0, n_cos[pos_rows])
+        sin.insert(0, n_sin[pos_rows])
+
+        if media_start:
+            txt = torch.arange(media_start, device=noisy_h.device)
+            x.insert(0, noisy_h[txt])
+            # Not retimed: text already carries the video timestep in the base's own table, and
+            # here the video being denoised is the noisy half, so its index is the right one.
+            mod.insert(0, n_mod[txt] + shift * mm.MODALITY_NUM)
+            cos.insert(0, n_cos[txt])
+            sin.insert(0, n_sin[txt])
+
+        return (torch.cat(x), (t_emb, torch.cat(mod), torch.cat(cos), torch.cat(sin)))
+
+    def decode_frame(self, enc, clean_ctx, noisy_h, noisy_ctx, spans, frame, **kwargs):
+        """`decoder_frame_input` through the decoder blocks. Returns the target frame's rows only.
+
+        The context half and any text rows are inputs, not outputs: they exist to condition the
+        `frame_rows` that get a velocity, and returning them would invite scoring a loss on rows
+        the encoder already produced.
+        """
+        x, ctx = self.decoder_frame_input(enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
+                                          **kwargs)
+        for block in self.decoder_blocks:
+            x = block(x, *ctx)
+        return x[-spans.frame_rows:]
+
     def forward(self, **forward_kwargs):
         h, ctx = self.encode(**forward_kwargs)
         return self.decode(h, ctx)

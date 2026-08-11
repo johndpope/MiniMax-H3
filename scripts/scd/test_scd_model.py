@@ -171,6 +171,133 @@ def test_decode_runs_and_moves_activations(_stock, scd, inputs, _consumed):
     assert not torch.equal(out, h), "decoder was a no-op"
 
 
+def _two_preambles(scd, inputs):
+    """(enc, clean_ctx, noisy_h, noisy_ctx, spans, media_start) — the token_concat decoder's inputs.
+
+    Clean is the same latent at t=1.0, which is sigma=0: the encoder's whole premise is that it
+    sees the video unnoised, and passing `inputs` unchanged would make every shift test vacuous
+    by feeding both halves the same packing.
+
+    The encoder is `encode_chunked`, not `encode`. `encode` runs the blocks unmasked, so its
+    frame f-1 rows have attended to frame f and the shift buys nothing — the context half hands
+    the decoder the clean target anyway, one hop further round. The shift and the frame-causal
+    mask are one mechanism and neither is sufficient alone; `test_decoder_context_cannot_see_its
+    _own_frame` fails against `encode` for exactly this reason.
+    """
+    clean = dict(inputs, t=torch.tensor([1.0]))
+    with torch.no_grad():
+        enc, clean_ctx, _ = scd.encode_chunked(1, **clean)
+        noisy_h, noisy_ctx, pack = scd.preamble(**inputs)
+    spans = scd.spans(inputs["video_latent"], enc.shape[0])
+    return enc, clean_ctx, noisy_h, noisy_ctx, spans, pack["media_start"]
+
+
+@case
+def test_decoder_frame_input_is_shifted(_stock, scd, inputs, _consumed):
+    """Frame f's context half is the encoder's frame f-1, and frame 0's is zeros.
+
+    This is the whole reason the shift exists. The encoder ran on CLEAN latents, so conditioning
+    frame f on its own encoder rows would hand the decoder the answer it is being trained to
+    predict — the leak is total, and it would show up as a loss that falls to zero and a sampler
+    that produces noise. Pinning the exact row slice is the only cheap way to catch an off-by-one
+    that would otherwise look like unusually fast convergence.
+    """
+    enc, cctx, nh, nctx, sp, _ = _two_preambles(scd, inputs)
+    r, lo = sp.frame_rows, sp.video_start
+    assert sp.latent_t >= 2, "needs at least two frames for a shift to mean anything"
+
+    x, _ = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 1)
+    assert x.shape[0] == 2 * r, f"token_concat gave {x.shape[0]} rows, expected 2R = {2 * r}"
+    cond, tgt = x[:r], x[r:]
+    assert torch.equal(cond, enc[lo:lo + r]), "context half is not the encoder's frame 0"
+    assert not torch.equal(cond, enc[lo + r:lo + 2 * r]), \
+        "context half IS the encoder's own frame 1 — the shift is missing and the clip leaks"
+    assert torch.equal(tgt, nh[lo + r:lo + 2 * r]), "target half is not the noisy frame 1"
+
+    x0, _ = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 0)
+    assert torch.equal(x0[:r], torch.zeros_like(x0[:r])), \
+        "frame 0 has no predecessor, so its context half must be zeros, not encoder rows"
+    assert torch.equal(x0[r:], nh[lo:lo + r]), "frame 0's target half is not the noisy frame 0"
+
+
+@case
+def test_decoder_halves_get_different_timesteps(_stock, scd, inputs, _consumed):
+    """Context and target must not share an AdaLN row: one is clean, the other is at sigma.
+
+    `mod_row = t_index * MODALITY_NUM + tag`, so equal indices would modulate the clean context as
+    though it were noise. That failure is invisible in shapes and in the loss curve's first
+    thousand steps, and it silently removes the conditioning signal the decoder exists to use.
+    """
+    mm = sys.modules[type(scd.base).__module__]
+    enc, cctx, nh, nctx, sp, media_start = _two_preambles(scd, inputs)
+    r = sp.frame_rows
+    _, (t_emb, mod, _, _) = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 1,
+                                                    media_start=media_start)
+
+    cond_t = (mod[media_start:media_start + r] // mm.MODALITY_NUM).unique()
+    tgt_t = (mod[media_start + r:] // mm.MODALITY_NUM).unique()
+    assert cond_t.numel() == 1 and tgt_t.numel() == 1, \
+        f"each half must sit at one timestep, got {cond_t.tolist()} and {tgt_t.tolist()}"
+    assert cond_t.item() != tgt_t.item(), \
+        f"both halves modulate at timestep {cond_t.item()} — the context is being treated as noisy"
+    assert int(mod.max()) < t_emb.shape[0] * mm.MODALITY_NUM, \
+        f"mod_row {int(mod.max())} indexes past the {t_emb.shape[0]}-timestep table"
+    # Tags survive the retime: the context half is video rows and must still say so, or AdaLN
+    # picks the text/audio modulation group for them.
+    tags = mod[media_start:media_start + r] % mm.MODALITY_NUM
+    assert (tags == mm.VIDEO_TAG).all(), f"context half lost its video tag: {tags.unique().tolist()}"
+
+
+@case
+def test_decoder_text_rows_are_a_prefix(_stock, scd, inputs, _consumed):
+    """`media_start` prepends exactly the text/ref rows and perturbs nothing else.
+
+    The 2R and 2R+text packs differ by 1.26x on the decoder frame, so both will be trained and
+    compared; that only means anything if the two are otherwise the same forward.
+    """
+    enc, cctx, nh, nctx, sp, media_start = _two_preambles(scd, inputs)
+    assert media_start > 0, "no text rows in this fixture — the test would pass vacuously"
+
+    bare, _ = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 1)
+    full, _ = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 1, media_start=media_start)
+    assert full.shape[0] == bare.shape[0] + media_start, \
+        f"text pack is {full.shape[0]} rows, expected {bare.shape[0]} + {media_start}"
+    assert torch.equal(full[:media_start], nh[:media_start]), "prefix is not the packed text rows"
+    assert torch.equal(full[media_start:], bare), "adding text changed the token_concat rows"
+
+
+@case
+def test_decoder_context_cannot_see_its_own_frame(_stock, scd, inputs, _consumed):
+    """Perturbing the clean latent at frame f leaves frame f's decoder output untouched.
+
+    The end-to-end statement of the shift, through the frame-causal encoder rather than through
+    row indices — the version that still fails if the encoder's causality and the decoder's shift
+    are each individually right but disagree about which frame is which.
+    """
+    enc, cctx, nh, nctx, sp, _ = _two_preambles(scd, inputs)
+    with torch.no_grad():
+        base = scd.decode_frame(enc, cctx, nh, nctx, sp, 1)
+
+    bumped = dict(inputs)
+    bumped["video_latent"] = inputs["video_latent"].clone()
+    bumped["video_latent"][:, :, 1] += 1.0          # the frame being denoised, clean side
+    enc2, cctx2, _, _, _, _ = _two_preambles(scd, bumped)
+    with torch.no_grad():
+        after = scd.decode_frame(enc2, cctx2, nh, nctx, sp, 1)
+    assert torch.equal(base, after), \
+        "changing frame 1's CLEAN latent moved frame 1's decoder output — the encoder feature " \
+        "the decoder conditions on is not blind to the frame it is predicting"
+
+    bumped0 = dict(inputs)
+    bumped0["video_latent"] = inputs["video_latent"].clone()
+    bumped0["video_latent"][:, :, 0] += 1.0
+    enc3, cctx3, _, _, _, _ = _two_preambles(scd, bumped0)
+    with torch.no_grad():
+        after0 = scd.decode_frame(enc3, cctx3, nh, nctx, sp, 1)
+    assert not torch.equal(base, after0), \
+        "changing frame 0 did nothing to frame 1 — the context half is not reaching the decoder"
+
+
 @case
 def test_production_split(_stock, _scd, inputs, _consumed):
     """The module's real defaults, on a 50-block model — the split Phase 2 will inherit.
