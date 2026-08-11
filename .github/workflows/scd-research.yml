@@ -43,11 +43,12 @@ jobs:
       # for uninteresting reasons. Compiling catches syntax and indentation breakage, which is
       # what actually goes wrong when these are edited without being run.
       #
-      # The four unit suites therefore do NOT run here. All are CPU-only and finish in ~1.2 s, so
+      # The five unit suites therefore do NOT run here. All are CPU-only and finish in ~1.2 s, so
       # they are cheap to run locally, and the design doc records their results:
       #     python3 scripts/scd/test_scd_model.py        # Phase 1 composition + Phase 3 decoder
       #     python3 scripts/scd/test_scd_attention.py    # Phase 2 mask + KV cache
       #     python3 scripts/scd/test_scd_lora.py         # Phase 3 adapters
       #     python3 scripts/scd/test_phase3_train.py     # Phase 3 loss + backward
+      #     python3 scripts/scd/test_phase3_sample.py    # Phase 3 sampler + scoring
       - name: Byte-compile probes
         run: python3 -m compileall -q scripts/scd
