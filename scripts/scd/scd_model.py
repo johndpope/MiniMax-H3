@@ -41,8 +41,7 @@ import sys
 import torch
 from torch import nn
 
-from scd_attention import (CONTEXT, FrameSpans, KVCache, block_mask, causal_mask, row_time,
-                           run_block)
+from scd_attention import FrameSpans, encode_chunks, row_time, run_block
 
 
 class _PreambleDone(Exception):
@@ -204,49 +203,11 @@ class MiniMaxH3SCD(nn.Module):
         sizes the dense one does not fit — the flag makes which mask ran a property of the call
         rather than of a size threshold nobody remembers. `test_block_mask_matches_dense` runs both.
         """
-        build = block_mask if block else causal_mask
         h, ctx, pack = self.preamble(**forward_kwargs)
         sp = self.spans(forward_kwargs["video_latent"], h.shape[0])
         t = self.clock(pack, sp.video_start, audio_is_context).to(h.device)
-        frame_t = t[sp.video_start::sp.frame_rows]
-
-        # Stable for a reproducible cache layout, not for correctness: the mask reads times and
-        # nothing else, so rows sharing a time may be permuted freely and a mutant that shuffles
-        # them passes every test here. Reproducibility is still worth having when the cache
-        # becomes something Phase 5 carries across calls.
-        order = torch.argsort(t, stable=True)
-        ordered_t = t[order]
-        cache = KVCache(len(self.encoder_blocks))
-        t_emb, mod_row, cos, sin = ctx
-
-        out = torch.empty_like(h)
-        held = t.new_empty(0)   # times of the rows currently in the cache, in cache order
-        start, frame = 0, 0
-        while start < len(order):
-            frame = min(frame + chunk_frames, sp.latent_t)
-            # Everything not later than the last video frame in this chunk — which sweeps up the
-            # audio rows that share or precede its time, and on the first pass the context rows.
-            stop = len(order) if frame >= sp.latent_t else \
-                int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
-            rows = order[start:stop]
-            chunk_t = ordered_t[start:stop]
-            chunk_ctx = (t_emb, mod_row[rows], cos[rows], sin[rows])
-            # Keys are what the cache already holds, then this chunk — the order `attention`
-            # appends in. Under a window `held` is no longer `ordered_t[:start]`, so it is tracked
-            # rather than re-derived from the prefix.
-            m = build(chunk_t, torch.cat([held, chunk_t]))
-            x = h[rows]
-            for i, block in enumerate(self.encoder_blocks):
-                x = run_block(block, x, chunk_ctx, mask=m, cache=cache[i])
-            out[rows] = x
-            held = torch.cat([held, chunk_t])
-            if window is not None and frame > window:
-                # Frames [frame-window, frame) survive; so does anything at CONTEXT, which is every
-                # comparison's -inf and would otherwise be the first thing evicted.
-                live = ((held >= frame_t[frame - window]) | (held == CONTEXT)).nonzero().squeeze(1)
-                cache.keep(live)
-                held = held[live]
-            start = stop
+        out, cache = encode_chunks(self.encoder_blocks, h, ctx, t, sp, chunk_frames,
+                                   block=block, window=window)
         return out, ctx, cache
 
     def decode(self, h, ctx):

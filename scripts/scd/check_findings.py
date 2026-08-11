@@ -42,6 +42,8 @@ REQUIRED_LEAVEOUT = ["sigmas", "n_blocks", "relative_cost", "mean_rel_cost_third
                      "baseline_loss_by_sigma", "leaveout_loss_by_sigma"]
 REQUIRED_MASK_COST = ["clip", "latent_t", "sigmas", "latent_hw", "encoder_depth", "n_blocks",
                       "base_quant", "checkpoint", "git_sha", "by_sigma"]
+REQUIRED_WINDOW_COST = ["clip", "sigmas", "windows", "chunk_frames", "encoder_depth", "n_blocks",
+                        "base_quant", "checkpoint", "git_sha", "by_source"]
 
 
 def on_grid(latent_t):
@@ -135,6 +137,42 @@ def check_mask_cost(path, p, errs):
                         f"`phase2_mask_cost.py --flatten-only {path}`")
 
 
+def check_window_cost(path, p, errs, warns):
+    """Phase 2's window sweep: one score block per window, per sigma, per source.
+
+    The check that matters is which windows are INFORMATIVE, because the obvious bound is wrong in
+    a way that reads as a finding. Eviction fires after a chunk, so a window only costs anything if
+    some chunk boundary is past it AND another chunk still follows. With `chunk_frames=c` the last
+    boundary is `latent_t`, so the condition is `window <= latent_t - c - ...` — concretely, a run
+    whose widest window evicts only after the final chunk reports a perfect score for a window that
+    was never actually consulted. That happened on the first run (window 6 at latent_t 7 scored an
+    exact 1.0000) and it looks exactly like "a 6-frame window is free."
+
+    It is still worth running as a control — it exercises `cache.keep` and confirms eviction does
+    not corrupt what remains — so this warns rather than errors, and says which it is.
+    """
+    chunk = p.get("chunk_frames", 1)
+    for source, per_sigma in p.get("by_source", {}).items():
+        for sigma, e in per_sigma.items():
+            tag = f"{path}: {source} sigma {sigma}"
+            # Chunks end at c, 2c, ... latent_t. A window bites only if some end is past it with
+            # another chunk still to come — i.e. the second-to-last boundary exceeds it.
+            ends = list(range(chunk, e["latent_t"], chunk))
+            last_useful = ends[-1] if ends else 0
+            for w in p.get("windows", []):
+                s = e.get("windows", {}).get(str(w))
+                if s is None:
+                    errs.append(f"{tag} has no window {w} to score")
+                    continue
+                if w >= last_useful:
+                    warns.append(f"{tag}: window {w} only evicts after the final chunk "
+                                 f"(latent_t={e['latent_t']}, chunk_frames={chunk}) — a control "
+                                 "for `cache.keep`, not a measurement of what a window costs")
+                elif s["cache_rows"] >= e["unbounded_cache_rows"]:
+                    errs.append(f"{tag}: window {w} kept {s['cache_rows']} rows against "
+                                f"{e['unbounded_cache_rows']} unbounded — nothing was evicted")
+
+
 def check_result_files(errs, warns):
     seen = 0
     for path in sorted(glob.glob("docs/phase0_*.json") + glob.glob("docs/phase2_*.json")):
@@ -160,6 +198,13 @@ def check_result_files(errs, warns):
             sig = [p[k] for k in ("sigma_ref", "sigma_test") if k in p]
             check_config(path, p.get("latent_t"), sig, errs, warns)
             check_lengths(path, p, REQUIRED_VALIDATE, errs)
+        elif "by_source" in p:
+            missing = [k for k in REQUIRED_WINDOW_COST if k not in p]
+            for src, per_sigma in p["by_source"].items():
+                for e in per_sigma.values():
+                    check_config(f"{path}:{src}", e.get("latent_t"), p.get("sigmas", []),
+                                 errs, warns)
+            check_window_cost(path, p, errs, warns)
         elif "by_sigma" in p:
             missing = [k for k in REQUIRED_MASK_COST if k not in p]
             check_config(path, p.get("latent_t"), p.get("sigmas", []), errs, warns)

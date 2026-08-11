@@ -509,5 +509,125 @@
   "index": 1,
   "expected": 0.339,
   "tol": 0.001
+ },
+ {
+  "id": "p2w-clip-w1-ccos-video-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w1_ccos_video",
+  "index": 0,
+  "expected": 0.992,
+  "tol": 0.001
+ },
+ {
+  "id": "p2w-clip-w1-ccos-video-s923",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w1_ccos_video",
+  "index": 1,
+  "expected": 0.995,
+  "tol": 0.001
+ },
+ {
+  "id": "p2w-clip-w1-ccos-audio-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w1_ccos_audio",
+  "index": 0,
+  "expected": 0.089,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-clip-w1-ccos-audio-s923",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w1_ccos_audio",
+  "index": 1,
+  "expected": 0.402,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-clip-w4-ccos-video-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w4_ccos_video",
+  "index": 0,
+  "expected": 1.0,
+  "tol": 0.001
+ },
+ {
+  "id": "p2w-clip-w4-ccos-audio-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w4_ccos_audio",
+  "index": 0,
+  "expected": 0.911,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-clip-w4-ccos-audio-s923",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w4_ccos_audio",
+  "index": 1,
+  "expected": 0.878,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-syn-w1-ccos-video-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w1_ccos_video",
+  "index": 0,
+  "expected": 0.973,
+  "tol": 0.001
+ },
+ {
+  "id": "p2w-syn-w4-ccos-video-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w4_ccos_video",
+  "index": 0,
+  "expected": 0.992,
+  "tol": 0.001
+ },
+ {
+  "id": "p2w-syn-w4-ccos-audio-s571",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w4_ccos_audio",
+  "index": 0,
+  "expected": 0.354,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-syn-w6-ccos-audio-s923",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w6_ccos_audio",
+  "index": 1,
+  "expected": 0.722,
+  "tol": 0.002
+ },
+ {
+  "id": "p2w-clip-w1-cache-rows",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w1_cache_rows",
+  "index": 0,
+  "expected": 538,
+  "tol": 0
+ },
+ {
+  "id": "p2w-syn-w1-cache-rows",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w1_cache_rows",
+  "index": 0,
+  "expected": 556,
+  "tol": 0
+ },
+ {
+  "id": "p2w-clip-w4-cache-rows",
+  "file": "docs/phase2_window_cost.json",
+  "key": "clip_w4_cache_rows",
+  "index": 0,
+  "expected": 1336,
+  "tol": 0
+ },
+ {
+  "id": "p2w-syn-w4-cache-rows",
+  "file": "docs/phase2_window_cost.json",
+  "key": "synthetic_w4_cache_rows",
+  "index": 0,
+  "expected": 1354,
+  "tol": 0
  }
 ]
