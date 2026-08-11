@@ -819,6 +819,42 @@ Two things mutation testing changed about the sampler, one of them a belief rath
 
 The case that earns its keep is `test_a_perfect_velocity_recovers_the_clip`: feed the sampler the true velocity and it must return the true latent to ~1e-5, since at σ=1 the noisy latent *is* the noise and one Euler step to 0 gives `noise + (x0 - noise)`. A sign-flipped sampler does not crash — it produces a latent with a sane standard deviation and near-zero correlation, which is indistinguishable from "the split did not learn" and would have been reported as a kill.
 
+#### The kill criterion, answered: not a kill (2026-08-11) — `runs/scd_v0/sample_*.json`
+
+2000 steps, rank 16, 12 clips at 512², 6.0 h on one RTX PRO 4000. Eval fell 2.3864 → 0.5408.
+Sampled 20 steps/frame, shift 12, `latent_t=7`, on four of the training clips, four ways:
+
+| mode | adapter | **corr[1:]** | MSE | noise floor | pred std |
+|---|---|---|---|---|---|
+| oracle | **trained** | **+0.9039** | 0.2923 | 2.19 | 1.12 |
+| oracle | unadapted | +0.1228 | 1.2283 | 2.19 | 0.405 |
+| ar | **trained** | **+0.6064** | 0.8355 | 2.35 | 1.16 |
+| ar | unadapted | +0.1229 | 1.2292 | 2.35 | 0.403 |
+
+Both halves of the criterion are met: the AR sample is not pure noise (MSE 0.84 against a 2.35 noise floor, correlation +0.61) and it beats the unadapted split by **4.9×** on the headline metric. The oracle number says the one-step conditional was learned; §D3's bet that a rank-16 adapter reaches a useful place on a 33B base is supported at this scale.
+
+**The unadapted baseline is the collapse trap, live.** Its MSE of 1.23 against a 2.19 noise floor reads like partial success, and its prediction std is **0.403 against the truth's ~1.0** — it is shrinking toward the mean, which lowers MSE while carrying nothing. Correlation says +0.12. Had the criterion been written on MSE, as the phase's "not pure noise" wording invites, the untrained split would have scored as a partial pass. This is the one case the *How the kill criterion will be read* section was written to guard against, and it fired.
+
+**The surprise is that AR does not compound.** The expected failure — training had no scheduled sampling — is a rollout that degrades frame over frame. Per-frame corr, averaged over the four clips:
+
+| | f0 | f1 | f2 | f3 | f4 | f5 | f6 |
+|---|---|---|---|---|---|---|---|
+| oracle, trained | +0.444 | +0.882 | +0.893 | +0.907 | +0.911 | +0.915 | **+0.916** |
+| **ar, trained** | +0.444 | +0.543 | +0.576 | +0.611 | +0.622 | +0.638 | **+0.648** |
+| either, unadapted | +0.114 | ~+0.12 | ~+0.11 | ~+0.13 | ~+0.13 | ~+0.13 | ~+0.11 |
+
+Both trained curves **rise monotonically**, and the oracle→AR gap *narrows* slightly across the clip (0.339 at f1, 0.268 at f6). So the AR penalty at this length is a **level shift, not a slope** — the decoder pays a one-time cost for conditioning on its own output and then does not degrade further. Exposure bias is present and bounded, which is a materially better position than the §6.4 curriculum was budgeted for. It does not license skipping that curriculum: seven latent frames is 1.2 s, and a slope too shallow to resolve over six frames is exactly what would still ruin a 15 s rollout. What it does say is that the first thing to measure in Phase 5 is *where* the slope appears, not whether it exists.
+
+Frame 0 reads **+0.444 in both modes, to three decimals** — the zeroed context half is doing at inference what `decoder_frame_input` does at training, and the two paths agree. The unadapted split scores the same in `ar` as in `oracle` (0.1229 vs 0.1228), i.e. it ignores its context entirely, which is what makes the trained oracle/AR gap readable as conditioning rather than as noise.
+
+**What this does not establish, and none of it is a technicality:**
+
+- **These are training clips.** 12 clips over 2000 steps at batch 1 is ~166 epochs. This measures that the split **can fit**, which is the Phase 3 question; it is not a generalisation number, and memorisation is a live explanation for the oracle's 0.90.
+- **No pixels exist.** Every number here is latent-space correlation. Nothing has been through the video VAE and no human has looked at a frame. corr +0.61 at 512² has no established mapping to perceptual quality, and asserting one would be inventing a result.
+- **512², 7 frames, no audio.** A quarter of 768p's rows, 1.2 s, and video-only — so Phase 2's audio window drift is untouched by this and the 768p geometry is unvalidated.
+
+Phase 3's gate is passed and Phase 4 is unblocked. The next measurement that changes anything is a VAE decode, because it is the cheapest way to turn +0.61 into something falsifiable by eye.
+
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
 - `forward_decoder_per_frame` + Fizgig-like LoRA train on small iso set (e.g. 20–50 clips @ **512**, short T).  

@@ -1,8 +1,11 @@
 # Separable Causal Diffusion on MiniMax H3: what is established, and what is still a bet
 
-**Status as of 2026-08-11.** Phases 0–2.5 are done and measured. Phase 3 — the quality
-question, which is the one that matters — is **17% into its first training run and has never
-produced a sample.** Read section 8 before quoting anything else here.
+**Status as of 2026-08-11.** Phases 0–2.5 are done and measured. Phase 3 finished its first
+training run and **passed its kill criterion** — the split generates structured video latents
+that correlate +0.61 with ground truth under autoregressive rollout, against +0.12 for the
+untrained split. It has been validated **only in latent space, only on training clips, only at
+512², and only over 1.2 seconds.** No pixels have been decoded. Read section 8 before quoting
+anything here.
 
 ---
 
@@ -33,7 +36,10 @@ attention is over one frame plus a bounded cache rather than over the whole clip
 | The split graph is 2.5–3.9× faster than stock H3 on real weights | **Measured**, with the range being a design decision not yet made |
 | Stock H3 cannot generate past ~2 s at 768p on a 24 GB card; the split can do 5 s+ | **Measured.** This is the stronger result |
 | A 33B model can be adapted for this on **one** 24 GB consumer card | **Running.** 15.4 GB peak, 7.7–13.7 s/step |
-| **The split, once trained, produces video** | **Unknown. Untested. No sample exists.** |
+| The trained split produces structured latents, not noise, and beats the untrained split 4.9× | **Measured.** §8 |
+| The autoregressive rollout does not compound error over 7 frames | **Measured**, and it was the expected failure. §8 |
+| **The split produces watchable video** | **Unknown. No pixels have been decoded.** |
+| **It generalizes beyond the 12 clips it was fit to** | **Unknown. Not tested.** |
 
 Everything above the last line is engineering, and engineering can be checked. The last line is
 the research question, and it is open.
@@ -254,38 +260,85 @@ convention does not crash — it produces a latent with a sane standard deviatio
 correlation, which is **indistinguishable from "the split did not learn"** and would have been
 reported as a kill.
 
-## 8. The part that is not established
+## 8. The quality result
 
-**No sample has ever been generated through this split.** The first training run is at **step
-350 of 2000**, 1.34 hours in, ~7 hours to go.
+### How it was going to be read, written down before the numbers existed
 
-What the run shows so far, on a fixed evaluation grid (same clips, same σ, same noise, every
-250 steps):
+This was committed to in advance and is quoted here unchanged, because "not pure noise" is
+exactly the kind of criterion a run talks you into afterwards.
 
-| | step 0 | step 249 |
-|---|---|---|
-| eval mean | 2.3864 | **0.7623** |
-| σ=0.25 | 3.1838 | 1.2578 |
-| σ=0.5 | 2.5419 | 0.7387 |
-| σ=0.9 | 1.4333 | 0.2904 |
+**Baseline is the unadapted split** — same module tree, same code path, adapters installed and
+left at zero. Strictly harder than the phase's "decoder-only random init", and the honest bar: if
+the trained adapters cannot beat what the surgery gives away free, the adaptation has not paid
+for itself.
 
-And per 100-step bin (loss / prediction std):
+**Headline metric is correlation, not MSE**, on frames 1 onward. A decoder that collapses to the
+mean posts a *lower* MSE than the truth's own variance while carrying no frame-specific
+information; correlation is ~0 for anything uncorrelated with the target, including a confident
+constant. Frame 0 is excluded because it has a zeroed context half by construction.
 
-| steps | loss | v_std |
-|---|---|---|
-| 1–100 | 1.085 | 0.981 |
-| 101–200 | 0.518 | 1.234 |
-| 201–300 | 0.460 | 1.275 |
-| 301–350 | 0.378 | 1.296 |
+**Two modes, and the gap between them is the finding.** *Oracle* denoises with the encoder
+reading real clean latents — the regime training ran in, a ceiling, not a result. *AR* is the real
+rollout, where the encoder only sees frames the decoder itself produced. Oracle also flat → the
+conditional was never learned, **a kill**. Oracle fine, AR collapses → exposure bias, the expected
+consequence of training without scheduled sampling, and evidence **for** the curriculum rather
+than against the split.
 
-The loss is falling and **the prediction standard deviation is rising while it falls**, which
-rules out the most common failure — collapsing to the dataset mean, which also lowers the loss
-and produces nothing. That is a real signal and it is the only quality evidence that exists.
+### What came back
 
-**What it is not:** this is training loss on training clips. 12 clips over 2000 steps is ~166
-epochs. Memorization is entirely plausible and this measurement cannot distinguish it from
-learning. It measures that the decoder *can fit at all*, which is the Phase 3 question, and it
-is not a generalization number.
+2000 steps, 6.0 hours, one card. Training eval fell 2.3864 → 0.5408. Then 20 denoising steps per
+frame, four clips, four ways:
+
+| mode | adapter | **corr[1:]** | MSE | noise floor | pred std |
+|---|---|---|---|---|---|
+| oracle | **trained** | **+0.9039** | 0.2923 | 2.19 | 1.12 |
+| oracle | unadapted | +0.1228 | 1.2283 | 2.19 | 0.405 |
+| ar | **trained** | **+0.6064** | 0.8355 | 2.35 | 1.16 |
+| ar | unadapted | +0.1229 | 1.2292 | 2.35 | 0.403 |
+
+**Not a kill.** The AR rollout is not noise and beats the unadapted split 4.9× on correlation.
+The oracle result says the one-step conditional was learned; the bet that a rank-16 adapter
+reaches a useful place on a 33B base holds at this scale.
+
+**The baseline is the collapse trap, live.** Its MSE of 1.23 against a 2.19 noise floor reads like
+partial success — and its prediction std is **0.403 against the truth's ~1.0**. It is shrinking
+toward the mean, which lowers MSE while carrying nothing. Correlation says +0.12. Had the metric
+been MSE, as the phase's own "not pure noise" wording invites, **the untrained split would have
+scored as a partial pass.** The pre-registration earned its keep on the first run.
+
+**The surprise is that AR does not compound.** Per-frame correlation, averaged over four clips:
+
+| | f0 | f1 | f2 | f3 | f4 | f5 | f6 |
+|---|---|---|---|---|---|---|---|
+| oracle, trained | +0.444 | +0.882 | +0.893 | +0.907 | +0.911 | +0.915 | **+0.916** |
+| **ar, trained** | +0.444 | +0.543 | +0.576 | +0.611 | +0.622 | +0.638 | **+0.648** |
+| either, unadapted | +0.114 | ~+0.12 | ~+0.11 | ~+0.13 | ~+0.13 | ~+0.13 | ~+0.11 |
+
+Both trained curves **rise monotonically**, and the oracle→AR gap *narrows* across the clip
+(0.339 at f1 → 0.268 at f6). The AR penalty is a **level shift, not a slope**: the decoder pays a
+one-time cost for conditioning on its own output and then stops degrading. That is the opposite of
+the failure that was budgeted for.
+
+It does not license skipping the scheduled-sampling curriculum. Seven latent frames is 1.2
+seconds, and a slope too shallow to resolve over six frames is exactly what would still ruin a
+15-second rollout. What it changes is the question: measure *where* the slope appears, not whether
+it exists.
+
+Two consistency checks fell out for free. Frame 0 reads **+0.444 in both modes to three decimals**
+— the zeroed context half behaves identically at inference and at training. And the unadapted
+split scores the same in AR as in oracle (0.1229 vs 0.1228), i.e. it ignores its context
+completely, which is what makes the trained model's oracle→AR gap readable as conditioning rather
+than as noise.
+
+### What this does not establish, and none of it is a technicality
+
+- **These are training clips.** 12 clips × 2000 steps at batch 1 is ~166 epochs. This measures
+  that the split **can fit**, which is the Phase 3 question. Memorization is a live explanation
+  for the oracle's 0.90 and nothing here rules it out.
+- **No pixels exist.** Every number is latent-space correlation. Nothing has been through the
+  video VAE; no human has looked at a frame. **+0.61 has no established mapping to perceptual
+  quality**, and claiming one would be inventing a result.
+- **1.2 seconds.** The no-compounding finding is measured over six frames.
 
 ### The named gaps, so they are not discovered later as surprises
 
@@ -300,32 +353,6 @@ is not a generalization number.
   adapters over 2K steps on a much larger base is our extrapolation and should be labelled as
   one.
 
-### How the result will be read — written down before the numbers exist
-
-This was committed to in advance, because "not pure noise" is exactly the kind of criterion a run
-talks you into afterwards.
-
-**Baseline is the unadapted split** — same module tree, same code path, adapters installed and
-left at zero. That is strictly harder than the phase's "decoder-only random init", and it is the
-honest bar: if the trained adapters cannot beat what the surgery gives away free, the adaptation
-has not paid for itself.
-
-**Headline metric is correlation, not MSE**, on frames 1 onward. A decoder that collapses to the
-mean posts a *lower* MSE than the truth's own variance while carrying no frame-specific
-information; correlation is ~0 for anything uncorrelated with the target, including a confident
-constant. Frame 0 is excluded because it has a zeroed context half by construction and is trained
-on only ~half of steps.
-
-**Two modes, and the gap between them is the finding.** *Oracle* denoises with the encoder
-reading real clean latents — the regime training ran in. It is a ceiling and must not be reported
-as a result. *AR* is the real rollout, where the encoder only ever sees frames the decoder itself
-produced. The two distinguishable failures are:
-
-- **Oracle is also flat** → the decoder never learned the conditional. **This is a kill.**
-- **Oracle is fine, AR collapses** → it learned the conditional and cannot survive its own
-  output. This is exposure bias, it is the *expected* consequence of training without scheduled
-  sampling, and it is evidence **for** adding the curriculum — not against the split.
-
 ## 9. What this adds up to
 
 The engineering case is made and measured: the split is exact where it claims to be exact,
@@ -334,12 +361,21 @@ weights, and — the stronger claim — it generates clip lengths on a 24 GB car
 cannot generate at all. The split point was not guessed; it was located by two independent
 measurements that agree, one of which is the paper's own criterion re-run on this model.
 
-The research case is not made. It rests on one bet that has not been settled: that a
-**bidirectional** model, adapted with a **light** adapter on a **small** dataset at **reduced
-geometry**, retains enough quality through a split that has no identity path. Nothing measured so
-far speaks to it. The loss curve is encouraging and the loss curve is not the answer.
+The research bet — that a **bidirectional** model, adapted with a **light** adapter, retains
+enough through a split that has no identity path — is no longer untested. It survived its first
+contact with a sampler, and it survived in a specific and checkable way: 4.9× over a baseline
+chosen to be hard, an oracle at +0.90 that says the conditional exists, and an AR rollout whose
+error is a level shift rather than a slope. The last of those was the failure this run was
+expected to produce, and it did not.
 
-The answer arrives when the run finishes and the sampler is pointed at it. It could be a kill.
+What has been shown is that **the mechanism works**. What has not been shown is that **the output
+is good**. Those are different claims and the gap between them is one VAE decode wide: 12 clips
+memorized at 512² over 1.2 seconds in latent space is not video, and until someone watches a
+frame, +0.61 is a number whose perceptual meaning is unknown.
+
+So the honest position is neither "it works" nor "it might not work". It is: the thing that could
+have killed this cheaply did not, the next thing that could kill it costs one afternoon, and it
+should be run before anything else is built on top.
 
 ---
 
