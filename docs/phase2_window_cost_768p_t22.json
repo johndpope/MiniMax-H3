@@ -1,0 +1,193 @@
+{
+ "clip": "none",
+ "sigmas": [
+  0.5714285714285715,
+  0.9230769230769231
+ ],
+ "windows": [
+  8,
+  12,
+  16,
+  20
+ ],
+ "chunk_frames": 1,
+ "encoder_depth": 30,
+ "layer_major": true,
+ "synthetic_lat_hw": [
+  48,
+  84
+ ],
+ "base_quant": "nf4",
+ "n_blocks": 50,
+ "checkpoint": "transformer",
+ "elapsed_s": 222.5134961605072,
+ "git_sha": "ffd2362",
+ "by_source": {
+  "synthetic": {
+   "0.5714285714": {
+    "seq_len": 22718,
+    "latent_t": 22,
+    "frame_rows": 1008,
+    "n_audio": 284,
+    "unbounded_cache_rows": 22718,
+    "unbounded_cache_bytes": 651370496,
+    "windows": {
+     "8": {
+      "ccos_video": 0.9965828061103821,
+      "ccos_audio": 0.7001511454582214,
+      "rel_l2_video": 0.023843105882406235,
+      "rel_l2_audio": 0.05482511222362518,
+      "common_mode_video": 0.9572604298591614,
+      "common_mode_audio": 0.9988924860954285,
+      "cache_rows": 8448,
+      "cache_bytes": 242221056
+     },
+     "12": {
+      "ccos_video": 0.9990347027778625,
+      "ccos_audio": 0.768153965473175,
+      "rel_l2_video": 0.012622729875147343,
+      "rel_l2_audio": 0.047076448798179626,
+      "common_mode_video": 0.9572604298591614,
+      "common_mode_audio": 0.9988924860954285,
+      "cache_rows": 12524,
+      "cache_bytes": 359088128
+     },
+     "16": {
+      "ccos_video": 0.9998697638511658,
+      "ccos_audio": 0.9075590372085571,
+      "rel_l2_video": 0.004749157931655645,
+      "rel_l2_audio": 0.022634854540228844,
+      "common_mode_video": 0.9572604298591614,
+      "common_mode_audio": 0.9988924860954285,
+      "cache_rows": 16610,
+      "cache_bytes": 476241920
+     },
+     "20": {
+      "ccos_video": 0.9999922513961792,
+      "ccos_audio": 0.9918057322502136,
+      "rel_l2_video": 0.0011202150490134954,
+      "rel_l2_audio": 0.005440466571599245,
+      "common_mode_video": 0.9572604298591614,
+      "common_mode_audio": 0.9988924860954285,
+      "cache_rows": 20684,
+      "cache_bytes": 593051648
+     }
+    }
+   },
+   "0.9230769231": {
+    "seq_len": 22718,
+    "latent_t": 22,
+    "frame_rows": 1008,
+    "n_audio": 284,
+    "unbounded_cache_rows": 22718,
+    "unbounded_cache_bytes": 651370496,
+    "windows": {
+     "8": {
+      "ccos_video": 0.9981215596199036,
+      "ccos_audio": 0.8066135048866272,
+      "rel_l2_video": 0.024602850899100304,
+      "rel_l2_audio": 0.06788203120231628,
+      "common_mode_video": 0.9175378084182739,
+      "common_mode_audio": 0.9992422461509705,
+      "cache_rows": 8448,
+      "cache_bytes": 242221056
+     },
+     "12": {
+      "ccos_video": 0.9995080232620239,
+      "ccos_audio": 0.9312125444412231,
+      "rel_l2_video": 0.012598209083080292,
+      "rel_l2_audio": 0.04432142898440361,
+      "common_mode_video": 0.9175378084182739,
+      "common_mode_audio": 0.9992422461509705,
+      "cache_rows": 12524,
+      "cache_bytes": 359088128
+     },
+     "16": {
+      "ccos_video": 0.9999339580535889,
+      "ccos_audio": 0.9774597883224487,
+      "rel_l2_video": 0.0046745468862354755,
+      "rel_l2_audio": 0.03291832283139229,
+      "common_mode_video": 0.9175378084182739,
+      "common_mode_audio": 0.9992422461509705,
+      "cache_rows": 16610,
+      "cache_bytes": 476241920
+     },
+     "20": {
+      "ccos_video": 0.9999966621398926,
+      "ccos_audio": 0.993854820728302,
+      "rel_l2_video": 0.0010298022534698248,
+      "rel_l2_audio": 0.012095822021365166,
+      "common_mode_video": 0.9175378084182739,
+      "common_mode_audio": 0.9992422461509705,
+      "cache_rows": 20684,
+      "cache_bytes": 593051648
+     }
+    }
+   }
+  }
+ },
+ "synthetic_w8_ccos_video": [
+  0.9965828061103821,
+  0.9981215596199036
+ ],
+ "synthetic_w8_ccos_audio": [
+  0.7001511454582214,
+  0.8066135048866272
+ ],
+ "synthetic_w8_rel_l2_video": [
+  0.023843105882406235,
+  0.024602850899100304
+ ],
+ "synthetic_w8_cache_rows": [
+  8448,
+  8448
+ ],
+ "synthetic_w12_ccos_video": [
+  0.9990347027778625,
+  0.9995080232620239
+ ],
+ "synthetic_w12_ccos_audio": [
+  0.768153965473175,
+  0.9312125444412231
+ ],
+ "synthetic_w12_rel_l2_video": [
+  0.012622729875147343,
+  0.012598209083080292
+ ],
+ "synthetic_w12_cache_rows": [
+  12524,
+  12524
+ ],
+ "synthetic_w16_ccos_video": [
+  0.9998697638511658,
+  0.9999339580535889
+ ],
+ "synthetic_w16_ccos_audio": [
+  0.9075590372085571,
+  0.9774597883224487
+ ],
+ "synthetic_w16_rel_l2_video": [
+  0.004749157931655645,
+  0.0046745468862354755
+ ],
+ "synthetic_w16_cache_rows": [
+  16610,
+  16610
+ ],
+ "synthetic_w20_ccos_video": [
+  0.9999922513961792,
+  0.9999966621398926
+ ],
+ "synthetic_w20_ccos_audio": [
+  0.9918057322502136,
+  0.993854820728302
+ ],
+ "synthetic_w20_rel_l2_video": [
+  0.0011202150490134954,
+  0.0010298022534698248
+ ],
+ "synthetic_w20_cache_rows": [
+  20684,
+  20684
+ ]
+}

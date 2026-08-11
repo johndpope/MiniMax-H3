@@ -348,6 +348,54 @@ def test_window_holds_the_cache_flat_vs_length(scd, _h, _ctx, _sp, mm, _pack):
 
 
 @case
+def test_keep_audio_windows_video_only(scd, _h, _ctx, _sp, mm, _pack):
+    """`keep_audio` must evict video on the window and nothing else — every audio row survives.
+
+    Measured on real weights at 768p, video's windowed error converges (ccos 1.000 -> 0.989 and
+    flattening) while audio's does not (0.83 -> 0.39, still falling). Audio is ~1.3% of the rows,
+    so exempting it buys back the only unbounded error term for almost nothing. That argument is
+    only worth anything if the exemption is exact, hence equality against the row set rather than
+    a bound: an implementation that keeps *most* audio, or that also spares the video rows sharing
+    an audio row's time, is flat, plausible, and not what was measured.
+
+    The window must still bite on video — asserted against the same run without `keep_audio` — or
+    this would pass trivially by keeping everything.
+    """
+    from scd_attention import CONTEXT
+
+    latent_t = 17
+    inputs = sample_inputs(mm, latent_t)
+    with torch.no_grad():
+        h, _, pack = scd.preamble(**inputs)
+        spans = scd.spans(inputs["video_latent"], h.shape[0])
+        t = scd.clock(pack, spans.video_start, audio_is_context=False)
+        _, _, kept = scd.encode_chunked(1, window=4, keep_audio=True, **inputs)
+        _, _, plain = scd.encode_chunked(1, window=4, **inputs)
+
+    idx = torch.arange(spans.seq_len)
+    is_audio = (idx < spans.video_start) & (t != CONTEXT)
+    n_audio = int(is_audio.sum())
+    assert n_audio > 0, "no audio rows under the AV clock — this test would pass vacuously"
+
+    horizon = t[spans.video_start::spans.frame_rows][latent_t - 4]
+    video_in_window = int(((t >= horizon) & (idx >= spans.video_start)).sum())
+    expect = video_in_window + n_audio + int((t == CONTEXT).sum())
+    assert len(kept) == expect, \
+        f"keep_audio cache holds {len(kept)} rows, window+audio+context is {expect} — " \
+        f"off by {len(kept) - expect}"
+    # Without the exemption, audio is evicted on the video window like everything else — but the
+    # audio rows whose own time is still inside it survive, so the two caches differ by the audio
+    # BEHIND the horizon, not by all of it.
+    audio_evicted = int(((t < horizon) & is_audio).sum())
+    assert audio_evicted > 0, "the window evicted no audio — nothing here is being exempted"
+    assert len(plain) == expect - audio_evicted, \
+        f"without keep_audio the cache is {len(plain)}, expected {expect - audio_evicted} — the " \
+        "two configurations are not differing by exactly the out-of-window audio rows"
+    assert len(kept) < spans.seq_len, \
+        f"keep_audio kept all {len(kept)} rows — the window is not biting on video"
+
+
+@case
 def test_wide_window_is_the_unbounded_cache(scd, _h, _ctx, sp, mm, _pack):
     """A window at least as wide as the clip evicts nothing, so it must reproduce `window=None`
     bit for bit. This is what pins the window as a restriction of the exact path rather than a

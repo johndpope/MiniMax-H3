@@ -584,6 +584,42 @@ That makes the window a dial rather than a wall, with two levers and a preferenc
 
 **One row of the file is a control, not a measurement, and the checker now says so.** window=6 at latent_t=7 scores exactly 1.0000 / 0.0000 on both modalities. That is not "a 6-frame window is free": eviction fires *after* a chunk, so with `chunk_frames=1` the last boundary is frame 7, and a 6-frame window is first consulted after the final chunk has already run. It is a useful control — `cache.keep` runs, drops rows, and provably changes nothing when it drops them too late to matter — but it reads exactly like a headline result. `check_findings.py` now computes the last chunk boundary that still has a chunk behind it and WARNs on any window at or past it, so the next window sweep cannot quote this shape by accident.
 
+#### Window cost at real 768p geometry (2026-08-11) — `docs/phase2_window_cost_768p*.json`
+
+The section above was measured at probe geometry, 256 rows per latent frame. At 768p a frame is 1008 rows, which changes the ratio of video to audio in the cache by 4× and is the geometry every shipping number is quoted at. Re-run there — synthetic content, `layer_major=True` so the unbounded reference is affordable, σ=0.571 and 0.923:
+
+| window | ccos video | ccos audio, `latent_t`=17 | ccos audio, `latent_t`=22 |
+|---|---|---|---|
+| 4 | 0.994 / 0.997 | 0.372 / 0.695 | — |
+| 8 | 0.997 / 0.998 | 0.859 / 0.887 | 0.700 / 0.807 |
+| 12 | 0.999 / 0.9995 | 0.906 / 0.974 | 0.768 / 0.931 |
+| 16 | 0.9999 | — | 0.908 / 0.978 |
+| 20 | 1.0000 | — | 0.992 / 0.994 |
+
+Audio is **much healthier at real geometry** than the probe suggested — 0.906 at window=12 against 0.455 at the probe's widest legitimate point — so the probe was pessimistic about the thing it was worst placed to measure. But the same window=12 scores 0.906 at 17 frames and **0.768 at 22**. Video does not do this: 0.9997 → 0.9990 over the same change. A window whose cost depends on how long the clip is is not a window, and if that reading held it would take M1 with it.
+
+**It does not hold for video, and it does hold for audio.** The pooled score cannot tell the difference, for a reason that is easy to miss: under a window of W the first W frames' queries see everything, so lengthening the clip raises the *share* of rows that are degraded even if no row is worse than before. A falling pooled mean is therefore the expected signature of a window that is working correctly. `phase2_window_cost.py` now reports ccos **per video-frame span**, which separates the two — plateau after frame W means bounded error, continued slide means accumulation:
+
+| rows past frame W | video | audio, first half → second half |
+|---|---|---|
+| W=8 (14 frames past) | 1.0000 → 0.9888, per-frame deltas shrinking | 0.831 → **0.386** |
+| W=12 (10 past) | 1.0000 → 0.9958 | 0.851 → **0.425** |
+| W=16 (6 past) | 1.0000 → 0.9989 | 0.855 → **0.690** |
+
+**Video's error is bounded and audio's accumulates.** Video asymptotes just under 0.99 and stops; audio roughly halves across the post-window span at every width tried. So §8.1's window delivers what it promises for the modality that costs 1008 rows a frame, and does not for the one that costs ~12.9.
+
+**`keep_audio`: the obvious fix, which is real but partial.** Audio is 1.3% of the rows, so exempting it from eviction entirely — windowing video alone — costs 34 MB per block at 768p/15s against the video window's 350 MB. `chunk_plan(..., keep_audio=True)` does that, and `test_keep_audio_windows_video_only` pins the exemption to the exact row set (two mutants — a no-op union and a stale audio mask — are caught by it and nothing else). Measured at `latent_t`=22, σ=0.571:
+
+| window | pooled ccos audio | with `keep_audio` | extra cache rows |
+|---|---|---|---|
+| 8 | 0.714 | **0.669** | +158 |
+| 12 | 0.779 | **0.890** | +114 |
+| 16 | 0.912 | **0.949** | +60 |
+
+A clear gain at the widths worth shipping and a small loss at 8, for about 1% more cache. But the per-frame curve at window=12 still slides — `1.000 0.979 0.955 0.927 0.962 0.735 0.581 0.853 0.561 0.654` — so it raises the whole curve without flattening it. That is diagnostic rather than disappointing: retaining audio's own K/V does not help when the *video* history those audio rows attend to is still evicted, and each audio row is built from an already-drifted predecessor. The unbounded term is video eviction reaching audio through the AV clock, not audio eviction.
+
+**So it stays opt-in, and the open question moves to Phase 3.** Three reasons not to widen the window further and call it solved: the content is synthetic, and audio's long-range structure is exactly what synthetic noise is least likely to model; σ=0.923 is consistently kinder than σ=0.571, so the number depends on where in the schedule it is read; and above all **these weights are untrained for this split**. Phase 0 measured how much causal masking an unadapted model tolerates, and SCD's entire premise is that training closes that gap. A drift measured on an unadapted encoder is the input to Phase 3, not a verdict on the architecture. What this does settle is the ranking: `window=12, keep_audio=True` is the configuration to train against, audio quality is the metric to watch while doing it, and video is not the thing at risk.
+
 #### The 53 GB was a property of the loop order, not of the encoder (2026-08-11)
 
 `encode_chunks` ran chunks outer, blocks inner — the obvious order, and the one streaming AR is forced into. It also forces **all 30 block caches to be live at once**, which is where 840 KiB per row and the 53 GB at 768p/15s come from. Transposing the loops (`layer_major=True`) removes that:
@@ -830,7 +866,7 @@ New, from the code audit:
 | Phase 0 late-layer sparsity | Blocks 33–49 mostly intra-frame attention |
 | **Phase 2 mask cost** | ✅ **PASSED on the `av` clock.** Video centered cos 0.915–0.949 at the encoder cut, flat at 0.997+ through block 25 with a cliff at 30 that independently corroborates the split point. Audio 0.445/0.339 — against 0.047/−0.074 when audio was context, which is what forced the clock change and the §5 D1 amendment |
 | **Phase 2 cache scaling** | ✅ **PASSED twice.** Tiny model: a 2-frame window holds the cache at exactly 53 rows while the sequence grows 191 → 327 → 463 — equality, not a trend. Real weights: 538 → 556 rows while `S` grows 2134 → 4826. **Now three times** — at 768p, 12758 → 12796 rows while `S` grows 12758 → 33184 |
-| **Phase 2 window cost** | ⚠️ **SPLIT by modality.** Video is flat from a 2-frame window (0.983–1.000 centered cos); audio is still climbing at 6 (0.455–0.722), because a window in video frames is ~6× tighter for audio. Not a wall — 12 frames is ~0.35 GB at 768p in the layer-major encoder, ~10 GB chunk-outer — but the window is now a quality dial Tier 1 has to set, not a free knob |
+| **Phase 2 window cost** | ⚠️ **SPLIT by modality, confirmed at 768p.** Video's windowed error is **bounded** — per-frame ccos asymptotes at 0.989 and flattens. Audio's **accumulates** — 0.83 → 0.39 across the span past the window, at every width tried. `keep_audio=True` (window video only, +1% cache) lifts pooled audio 0.779 → 0.890 at window=12 but does not flatten the curve, because the drift enters through evicted *video* that audio attends to. Measured on weights untrained for this split, so it is Phase 3's input, not a verdict |
 | **Phase 2.5 Tier 0** | ✅ **PASSED** — 3.90× at 768p/10s, 5.03× at 15s (gate was ≥2×) |
 | **Phase 2.5 Tier 1** | ✅ **PASSED (2026-08-11)** — 2.93×/3.51×/3.87× at N=8/16/30 on real NF4 weights at 768p, `latent_t`=12, ceiling 4.39×. Decoder flat at ~214 ms/frame and cache flat at 12758→12796 rows across a 2.6× length span. The result the gate did not ask for: **stock OOMs past ~2 s at 768p on 24 GB** and SCD does not, so at 15 s there is no ratio to take. Caveat: 15 s itself is unmeasured on this card for stock, so the gate is met by extrapolation plus a hard stock ceiling, not by a 15 s A/B |
 | Phase 3 sample | Not noise; human “coherent frame” |

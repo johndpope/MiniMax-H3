@@ -692,5 +692,53 @@
   "key": "t22_cache_rows",
   "expected": 8702,
   "tol": 0
+ },
+ {
+  "id": "p2w768-t17-w12-ccos-video",
+  "file": "docs/phase2_window_cost_768p.json",
+  "key": "synthetic_w12_ccos_video",
+  "expected": 0.9997,
+  "tol": 0.002,
+  "index": 0
+ },
+ {
+  "id": "p2w768-t17-w12-ccos-audio",
+  "file": "docs/phase2_window_cost_768p.json",
+  "key": "synthetic_w12_ccos_audio",
+  "expected": 0.906,
+  "tol": 0.03,
+  "index": 0
+ },
+ {
+  "id": "p2w768-t22-w12-ccos-audio",
+  "file": "docs/phase2_window_cost_768p_t22.json",
+  "key": "synthetic_w12_ccos_audio",
+  "expected": 0.768,
+  "tol": 0.03,
+  "index": 0
+ },
+ {
+  "id": "p2w768-t22-w20-ccos-audio",
+  "file": "docs/phase2_window_cost_768p_t22.json",
+  "key": "synthetic_w20_ccos_audio",
+  "expected": 0.992,
+  "tol": 0.01,
+  "index": 0
+ },
+ {
+  "id": "p2w768-keepaudio-w12-ccos-audio",
+  "file": "docs/phase2_window_cost_768p_keepaudio.json",
+  "key": "synthetic_w12_ccos_audio",
+  "expected": 0.89,
+  "tol": 0.03,
+  "index": 0
+ },
+ {
+  "id": "p2w768-keepaudio-w12-cache-rows",
+  "file": "docs/phase2_window_cost_768p_keepaudio.json",
+  "key": "synthetic_w12_cache_rows",
+  "expected": 12638,
+  "tol": 0,
+  "index": 0
  }
 ]

@@ -275,7 +275,7 @@ def attention(attn, x, cos, sin, mask=None, cache=None):
     return attn.out_proj(out)
 
 
-def chunk_plan(t, spans, chunk_frames, window=None):
+def chunk_plan(t, spans, chunk_frames, window=None, keep_audio=False):
     """The chunk schedule: a list of `(rows, chunk_t, live)` in causal order.
 
     Both loop orders in `encode_chunks` read this, rather than each cutting its own chunks. The
@@ -285,6 +285,15 @@ def chunk_plan(t, spans, chunk_frames, window=None):
 
     `rows` are packed row indices, `chunk_t` their times in cache order, and `live` the eviction
     index applied AFTER the chunk (None when nothing is dropped).
+
+    `keep_audio` exempts audio rows from eviction, windowing video alone. The window exists because
+    video costs 1008 rows per latent frame at 768p; audio costs ~12.9, so evicting it saves ~1.3%
+    of the cache — and the measured price of that 1.3% is the whole of the window's error. Video
+    under a window converges (ccos 1.000 -> 0.989 and flattening, 14 frames past the boundary);
+    audio does not (0.83 -> 0.39 over the same span, still falling), because an audio row's own
+    history is evicted on the video clock and each one is then computed from a slightly worse
+    predecessor. Keeping all of it is 34 MB per block at 768p/15s against the video window's
+    350 MB, so the term that does not converge is also the cheap one.
     """
     frame_t = t[spans.video_start::spans.frame_rows]
     # Stable for a reproducible cache layout, not for correctness: the mask reads times and
@@ -293,8 +302,12 @@ def chunk_plan(t, spans, chunk_frames, window=None):
     # something Phase 5 carries across calls.
     order = torch.argsort(t, stable=True)
     ordered_t = t[order]
+    # Video is the last contiguous segment, so a row index below `video_start` that is not CONTEXT
+    # is audio — no second copy of the packer's audio-row arithmetic, per `FrameSpans`.
+    ordered_audio = (order < spans.video_start) & (ordered_t != CONTEXT)
 
-    plan, held, start, frame = [], t.new_empty(0), 0, 0
+    plan, held, held_audio, start, frame = [], t.new_empty(0), None, 0, 0
+    held_audio = torch.zeros(0, dtype=torch.bool, device=t.device)
     while start < len(order):
         frame = min(frame + chunk_frames, spans.latent_t)
         # Everything not later than the last video frame in this chunk — which sweeps up the audio
@@ -303,19 +316,23 @@ def chunk_plan(t, spans, chunk_frames, window=None):
             int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
         chunk_t = ordered_t[start:stop]
         held = torch.cat([held, chunk_t])
+        held_audio = torch.cat([held_audio, ordered_audio[start:stop]])
         live = None
         if window is not None and frame > window:
             # Frames [frame-window, frame) survive; so does anything at CONTEXT, which is every
             # comparison's -inf and would otherwise be the first thing evicted.
-            live = ((held >= frame_t[frame - window]) | (held == CONTEXT)).nonzero().squeeze(1)
-            held = held[live]
+            keep = (held >= frame_t[frame - window]) | (held == CONTEXT)
+            if keep_audio:
+                keep = keep | held_audio
+            live = keep.nonzero().squeeze(1)
+            held, held_audio = held[live], held_audio[live]
         plan.append((order[start:stop], chunk_t, live))
         start = stop
     return plan
 
 
 def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=None,
-                  layer_major=False):
+                  layer_major=False, keep_audio=False):
     """Run `blocks` over an already-packed stream, causally, in chunks. Returns (out, cache).
 
     Lives here rather than on `MiniMaxH3SCD` because it needs the mask, the cache and the clock —
@@ -354,7 +371,7 @@ def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=No
     """
     build = block_mask if block else causal_mask
     t_emb, mod_row, cos, sin = ctx
-    plan = chunk_plan(t, spans, chunk_frames, window)
+    plan = chunk_plan(t, spans, chunk_frames, window, keep_audio)
 
     def step(blk, x_in, out, cache_slot, masks):
         held = t.new_empty(0)

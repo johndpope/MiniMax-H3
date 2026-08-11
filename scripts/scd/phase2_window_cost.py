@@ -52,7 +52,22 @@ def rel_l2(a, b):
     return (a.float() - b.float()).norm().div(b.float().norm().clamp_min(1e-12)).item()
 
 
-def score(out, ref, n_audio):
+def by_frame(out, ref, bucket, n_frames):
+    """ccos per video-frame span, for rows bucketed by `bucket` — the pooled score's missing axis.
+
+    A window is supposed to make quality independent of clip length, and a POOLED score cannot
+    tell you whether it does. Under a window of W, the first W frames' queries see everything and
+    only later ones are evicted against, so lengthening the clip raises the share of rows that are
+    degraded even if each degraded row is no worse than before. The pooled mean then falls with
+    length and looks exactly like a window that stops working — which is the reading that would
+    kill M1. The per-frame curve separates the two: if it plateaus after frame W, the window is
+    doing its job and the pooled drop was an averaging artefact; if it keeps sliding, it is not.
+    """
+    return [centered_cos(out[m], ref[m], ref[m].float().mean(0)) if (m := bucket == f).any() else
+            None for f in range(n_frames)]
+
+
+def score(out, ref, n_audio, aud_bucket=None, vid_bucket=None, n_frames=0):
     """Video and audio separately — AdaLN is per-modality and they need not degrade together.
 
     Both slices start at `audio_start`, so the first `n_audio` rows are audio. The reference is
@@ -60,7 +75,7 @@ def score(out, ref, n_audio):
     """
     vid = (out[n_audio:], ref[n_audio:])
     aud = (out[:n_audio], ref[:n_audio])
-    return {
+    s = {
         "ccos_video": centered_cos(*vid, vid[1].float().mean(0)),
         "ccos_audio": centered_cos(*aud, aud[1].float().mean(0)),
         "rel_l2_video": rel_l2(*vid),
@@ -68,20 +83,35 @@ def score(out, ref, n_audio):
         "common_mode_video": common_mode(vid[1]),
         "common_mode_audio": common_mode(aud[1]),
     }
+    if aud_bucket is not None:
+        s["ccos_audio_by_frame"] = by_frame(*aud, aud_bucket, n_frames)
+        s["ccos_video_by_frame"] = by_frame(*vid, vid_bucket, n_frames)
+    return s
 
 
 @torch.no_grad()
-def run(model, blocks, stream, window, chunk_frames, device):
+def run(model, blocks, stream, window, chunk_frames, device, layer_major=False,
+        keep_audio=False):
     """One chunked encode. Returns (rows from audio_start on, cache rows, cache bytes).
 
     Encoder blocks are pinned to the device for the duration rather than swapped per block: this
     loop touches every block once per CHUNK, so leaving `blocks_to_swap` in charge would move the
     same 22 blocks across PCIe once per frame and measure the interconnect.
+
+    `layer_major` is what makes this affordable at 768p, and it changes what `cache` means. Chunk-
+    major holds all `encoder_depth` caches at once, so at 1008 rows/frame the UNBOUNDED reference
+    run — the thing every window is scored against — is tens of GB and simply cannot be taken on
+    this card. Block-major holds one, and is bit-exact against chunk-major
+    (`test_layer_major_matches_chunk_major`), so the scores are unaffected. The returned byte count
+    is then one block's rather than all of them; the ratios reported against the reference are
+    taken in the same mode and stay comparable, and `layer_major` is recorded in the payload so a
+    reader cannot mistake a one-block figure for a whole-encoder one.
     """
     sp = FrameSpans(stream["seq_len"], stream["latent_t"], stream["frame_rows"])
     t = row_time(stream["pos"][:, 0], stream["audio_start"]).to(device)
     ctx = (stream["t_emb"], stream["mod_row"], stream["cos"], stream["sin"])
-    out, cache = encode_chunks(blocks, stream["h"], ctx, t, sp, chunk_frames, window=window)
+    out, cache = encode_chunks(blocks, stream["h"], ctx, t, sp, chunk_frames, window=window,
+                               layer_major=layer_major, keep_audio=keep_audio)
     return out[stream["audio_start"]:].to("cpu", torch.bfloat16), len(cache), cache.bytes()
 
 
@@ -94,6 +124,13 @@ def main():
     ap.add_argument("--latent-t", type=int, default=7)
     ap.add_argument("--synthetic-latent-t", type=int, default=17,
                     help="0 to skip the synthetic long run")
+    ap.add_argument("--synthetic-lat-hw", type=int, nargs=2, default=[32, 32], metavar=("H", "W"),
+                    help="latent H W for the synthetic source; 48 84 is 768p (1008 rows/frame)")
+    ap.add_argument("--keep-audio", action="store_true",
+                    help="window video only; audio rows are never evicted. ~1.3%% of rows at 768p")
+    ap.add_argument("--layer-major", action="store_true",
+                    help="block-outer encode: one block's cache live instead of encoder_depth. "
+                         "Required at 768p, where the unbounded reference is otherwise tens of GB")
     ap.add_argument("--windows", type=int, nargs="+", default=[1, 2, 3, 4, 6])
     ap.add_argument("--chunk-frames", type=int, default=1)
     ap.add_argument("--sigmas", type=float, nargs="+",
@@ -121,8 +158,8 @@ def main():
     if args.latents:
         sources["clip"] = (load_latents(args.latents, args.latent_t, device), text_embeds)
     if args.synthetic_latent_t:
-        z, _ = synthetic_inputs(args.synthetic_latent_t, 32, 32, text_embeds.shape[1],
-                                device, dtype)
+        z, _ = synthetic_inputs(args.synthetic_latent_t, *args.synthetic_lat_hw,
+                                text_embeds.shape[1], device, dtype)
         sources["synthetic"] = (z, text_embeds)
 
     t0 = time.time()
@@ -136,20 +173,38 @@ def main():
                   f"frames={stream['latent_t']}x{stream['frame_rows']}  audio={n_audio}",
                   flush=True)
 
-            ref, ref_rows, ref_bytes = run(model, blocks, stream, None, args.chunk_frames, device)
+            # Bucket every scored row by the video frame whose span it falls in. Audio sits on its
+            # own 40 Hz grid, so this is a searchsorted against the frame times rather than a
+            # rows-per-frame division — same reason `row_time` reads `pos_t` instead of
+            # reconstructing it. Video rows are frame-major, so theirs is exact by construction.
+            t_all = row_time(stream["pos"][:, 0], stream["audio_start"]).to(device)
+            frame_t = t_all[stream["video_start"]::stream["frame_rows"]]
+            aud_bucket = torch.searchsorted(frame_t.contiguous(),
+                                            t_all[stream["audio_start"]:stream["video_start"]]
+                                            .contiguous()).clamp_max(stream["latent_t"] - 1).cpu()
+            vid_bucket = torch.arange(stream["seq_len"] - stream["video_start"]).div(
+                stream["frame_rows"], rounding_mode="floor")
+
+            ref, ref_rows, ref_bytes = run(model, blocks, stream, None, args.chunk_frames, device,
+                                           args.layer_major, args.keep_audio)
             entry = {"seq_len": stream["seq_len"], "latent_t": stream["latent_t"],
                      "frame_rows": stream["frame_rows"], "n_audio": n_audio,
                      "unbounded_cache_rows": ref_rows, "unbounded_cache_bytes": ref_bytes,
                      "windows": {}}
             for w in args.windows:
-                out, rows, nbytes = run(model, blocks, stream, w, args.chunk_frames, device)
-                s = score(out, ref, n_audio)
+                out, rows, nbytes = run(model, blocks, stream, w, args.chunk_frames, device,
+                                        args.layer_major, args.keep_audio)
+                s = score(out, ref, n_audio, aud_bucket, vid_bucket, stream["latent_t"])
                 s["cache_rows"], s["cache_bytes"] = rows, nbytes
                 entry["windows"][str(w)] = s
+                tail = [x for x in s["ccos_audio_by_frame"][w:] if x is not None]
                 print(f"  window {w:2d}: ccos_video {s['ccos_video']:7.4f}  "
                       f"ccos_audio {s['ccos_audio']:7.4f}  rel_l2 {s['rel_l2_video']:.4f}  "
                       f"cache {rows:5d}/{ref_rows} rows "
                       f"({nbytes / ref_bytes:.2f}x)", flush=True)
+                if tail:
+                    print(f"            audio past frame {w}: "
+                          f"{' '.join(f'{x:.3f}' for x in tail)}", flush=True)
                 del out
                 torch.cuda.empty_cache()
             per_sigma[f"{sigma:.10f}"] = entry
@@ -162,6 +217,8 @@ def main():
     payload = {
         "clip": args.clip, "sigmas": args.sigmas, "windows": args.windows,
         "chunk_frames": args.chunk_frames, "encoder_depth": args.encoder_depth,
+        "layer_major": args.layer_major, "synthetic_lat_hw": args.synthetic_lat_hw,
+        "keep_audio": args.keep_audio,
         "base_quant": args.base_quant, "n_blocks": len(model.blocks),
         "checkpoint": os.path.basename(args.checkpoint.rstrip("/")),
         "elapsed_s": time.time() - t0, "git_sha": sha, "by_source": results,
