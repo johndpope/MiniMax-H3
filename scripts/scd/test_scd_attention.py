@@ -185,6 +185,30 @@ def test_chunked_matches_full(scd, _h, _ctx, sp, mm, pack):
 
 
 @case
+def test_block_mask_matches_dense(scd, _h, _ctx, sp, mm, _pack):
+    """The FlexAttention block mask is the same mask, not a cheaper approximation of it.
+
+    Dense is what every Phase 2 number was measured with and what the other cases here reason
+    about; block is the only one that can exist at 768p/15s, where a bool `[S, S]` is 3.8 GB per
+    chunk. So the two have to be pinned together, and through `encode_chunked` rather than on a
+    synthetic q/k/v: the rectangular chunk masks — new rows as queries, the whole cache as keys —
+    are the shapes the encoder actually builds, and they are where a block mask that quietly
+    padded or transposed would show up.
+
+    Tolerance is 1e-4, looser than the 1e-5 elsewhere, because this compares two attention
+    KERNELS rather than two orderings of one. Anything near the 1e-1 a wrong mask produces is
+    still caught by three orders of magnitude.
+    """
+    inputs = sample_inputs(mm, sp.latent_t)
+    with torch.no_grad():
+        for chunk in (2, sp.latent_t):
+            dense, _, _ = scd.encode_chunked(chunk, False, block=False, **inputs)
+            flex, _, _ = scd.encode_chunked(chunk, False, block=True, **inputs)
+            d = (dense - flex).abs().max().item()
+            assert d < 1e-4, f"chunk {chunk}: block mask differs from dense by {d:.3e}"
+
+
+@case
 def test_clocks_agree_on_video_only(scd, _h, _ctx, sp, _mm, pack):
     """`FrameSpans.frame_index` and `row_time(..., video_start)` are two routes to one mask.
 
@@ -277,6 +301,63 @@ def test_cache_bytes_scale_with_rows(scd, _h, _ctx, sp, mm, _pack):
     expect = (2 * sp.seq_len * attn.heads * attn.head_dim * 4 * len(scd.encoder_blocks))
     assert cache.bytes() == expect, f"cache is {cache.bytes()} B, expected {expect} B"
     assert isinstance(cache, KVCache)
+
+
+@case
+def test_window_holds_the_cache_flat_vs_length(scd, _h, _ctx, _sp, mm, _pack):
+    """§8.1's claim, which is the whole reason SCD's duration is unbounded: with a window the
+    cache stops growing with the clip. Asserted as EQUALITY across three lengths rather than as a
+    ceiling, because a ceiling is satisfied by something that still grows, just slower.
+
+    Also asserts the context rows survive. They are the failure mode a plausible implementation
+    walks into: context sits at -inf, which is behind every horizon, so a window that evicts on
+    time alone drops the text and reference rows first and the encoder quietly loses its
+    conditioning one chunk in — with no shape change to notice.
+
+    Lengths are on the 5n+2 latent grid the packer enforces; off-grid values raise rather than
+    round, which is how this notices if the grid ever moves.
+    """
+    from scd_attention import CONTEXT
+
+    seen = {}
+    for latent_t in (7, 12, 17):
+        inputs = sample_inputs(mm, latent_t)
+        with torch.no_grad():
+            h, _, pack = scd.preamble(**inputs)
+            spans = scd.spans(inputs["video_latent"], h.shape[0])
+            t = scd.clock(pack, spans.video_start, audio_is_context=False)
+            _, _, cache = scd.encode_chunked(1, window=2, **inputs)
+            _, _, unbounded = scd.encode_chunked(1, **inputs)
+        assert int((t == CONTEXT).sum()) > 0, \
+            "the AV clock left no context rows — nothing pins the conditioning"
+        # Exactly the rows inside the window, plus context. Equality rather than a bound: a
+        # version that evicts on time alone leaves a cache that is still flat, still smaller than
+        # the sequence, and still big enough to clear any count-based floor — it is simply missing
+        # the text rows, and only the exact number says so.
+        horizon = t[spans.video_start::spans.frame_rows][spans.latent_t - 2]
+        expect = int(((t >= horizon) | (t == CONTEXT)).sum())
+        assert len(cache) == expect, \
+            f"latent_t={latent_t}: cache holds {len(cache)} rows, the window plus context is " \
+            f"{expect} — off by {len(cache) - expect}"
+        assert len(unbounded) == spans.seq_len > len(cache), \
+            f"latent_t={latent_t}: window kept {len(cache)} of {spans.seq_len} rows"
+        seen[latent_t] = len(cache)
+    assert len(set(seen.values())) == 1, \
+        f"windowed cache grew with clip length: {seen} — §8.1's flat-VRAM claim does not hold"
+
+
+@case
+def test_wide_window_is_the_unbounded_cache(scd, _h, _ctx, sp, mm, _pack):
+    """A window at least as wide as the clip evicts nothing, so it must reproduce `window=None`
+    bit for bit. This is what pins the window as a restriction of the exact path rather than a
+    second, subtly different encoder — if the two disagree here, the difference is a bug in the
+    bookkeeping and not the approximation the window is allowed to make."""
+    inputs = sample_inputs(mm, sp.latent_t)
+    with torch.no_grad():
+        ref, _, _ = scd.encode_chunked(2, **inputs)
+        got, _, _ = scd.encode_chunked(2, window=sp.latent_t, **inputs)
+    assert torch.equal(got, ref), \
+        f"a full-width window differs from no window by {(got - ref).abs().max().item():.3e}"
 
 
 @case

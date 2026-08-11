@@ -137,7 +137,7 @@ Difficulty ratings below are **post-audit** — several items the first draft ca
 |-----------------|------------------|----------|-----------|
 | Split transformer blocks | `transformer_blocks[:32/32:]` | `blocks[:33/33:]` | Easy API, same idea |
 | Frame-level causal mask — *spans* | Built for LTX frame tokens | Video is the last segment, contiguous, frame-major; `PackedLayout.segments` gives the table | **Easy** (was rated Hard) |
-| Frame-level causal mask — *kernel* | LTX passes `self_attention_mask` | `mask=None` hardcoded; a dense `[S,S]` mask at S=62k is **3.8 GB** | **Hard — the main risk.** Needs FlexAttention `create_block_mask` with a `mask_mod` over `position_ids[:,0]` |
+| Frame-level causal mask — *kernel* | LTX passes `self_attention_mask` | `mask=None` hardcoded; a dense `[S,S]` mask at S=62k is **3.8 GB** | ~~**Hard — the main risk.**~~ ✅ **Done** — `scd_attention.block_mask`, a compiled FlexAttention `create_block_mask` with a `mask_mod` over `position_ids[:,0]`, exactly as predicted. It was not the main risk: the KV cache it feeds is 53 GB at the same size |
 | Encoder σ=0 clean pass | Video latents clean | Video (+ audio, see D1) | Medium |
 | KV-cache in attention | LTX Attention supports cache | H3 `Attention.forward` has **no** kv_cache | **Hard** — fork attention (Fizgig's is plain SDPA, easier to fork than Comfy's fused in-place kernels) |
 | KV-cache *memory* | ~13 GB @ 30s, fits 32 GB | **~0.95 GB per latent frame** at 768p bf16 → 58 GB @ 10s, 87 GB @ 15s | **Hard — new blocker**, see §8.1 |
@@ -265,6 +265,12 @@ Must implement:
    **A dense `[S,S]` mask is not an option** — 62k² bool = 3.8 GB. Use
    `torch.nn.attention.flex_attention.create_block_mask` with a `mask_mod` closure over the frame
    index derived from `position_ids[:,0]`. This is the single largest piece of new work in the port.
+   **Shipped as `scd_attention.block_mask` (2026-08-11).** The `mask_mod` did turn out to be a
+   closure over `position_ids[:,0]` exactly as written here — `row_time` reads that axis — but the
+   rule is not "video ≤ i, plus always text/cond/ref". It is just `k_time <= q_time`, with context
+   at −inf; "always visible" and "blind to the ordered rows" are one inequality read from its two
+   ends. And this was **not** the largest piece of new work: the mask is 3.8 GB at 768p/15s and the
+   KV cache it feeds is 53 GB.
 3. **Encoder cache key:** cache K/V only for encoder layers; append one frame at a time in AR.
    See §8.1 — the cache does not fit naively at 768p and needs a window or quantization from day one.
 4. **RoPE:** *solved.* `rope_freqs()` is a pure function of `position_ids [S,3]`, so the `token_concat`
@@ -486,9 +492,30 @@ Design notes worth carrying forward:
 - **Audio was context by scope, not by nature — and that turned out to be the wrong scope.** Filed here as a v1 item on the assumption that a video-only encoder was enough for v0; the real-weights numbers said otherwise within the day, and audio now runs ordered on its own 40 Hz spans. `row_time`'s `video_start` argument still builds the video-only clock, kept so the rejected option keeps a measurement rather than a memory.
 - **`encode_chunked` runs the preamble once over the whole clip**, which real AR inference cannot do — later frames do not exist yet. It is the correctness harness for the cache, not the inference driver; Phase 5's driver has to build positions incrementally.
 
-Still open, deliberately: the mask is **dense**. At 768p, S≈62k makes an `[S, S]` bool 3.8 GB, so FlexAttention `create_block_mask` is the shipping path (§6.3) — `FrameSpans.frame_index()` is already the `mask_mod` it needs, so that swap is local to `attention()`. The §8.1 chunk-reset policy is also not implemented: `KVCache` grows monotonically, which is right for a single clip and is exactly what OOMs at 10 s if anyone ships it as-is.
-
 Mutation-tested rather than trusted for being green — a mask that drops self-attention, a mask that lets video see everything, a cache that overwrites instead of appending, a cache written but never read, a one-row error in `video_start`, and an unmasked chunk: six mutants, six distinct failures.
+
+#### Both scale blockers closed (2026-08-11)
+
+Two things were left open above and are now done, because Tier 1 cannot start without either.
+
+**The mask is no longer dense.** `scd_attention.block_mask` builds the same `k_time <= q_time` rule as a FlexAttention `BlockMask`, and `encode_chunked(..., block=True)` selects it. `create_block_mask` is compiled, per Tier 0's finding that the eager path materializes a dense int64 `[S, S]` on its way to the sparse one and OOMs at 30 GB for S=62k. Queries and keys are separate time vectors rather than one sequence, because a chunk's queries are the new rows while its keys are the whole cache — the rectangular case is the one the encoder actually builds. `test_block_mask_matches_dense` pins the two paths together through `encode_chunked` at 1e-4; a `<` for `<=` in the `mask_mod` moves it to 1.6e-01.
+
+Not a default. At test sizes the block mask is a compile for no benefit, and making the choice a size threshold means nobody can tell from a call site which attention ran.
+
+**The window policy is implemented** — `encode_chunked(..., window=W)` keeps the last `W` latent frames and evicts the rest, and this closes the *larger* of the two problems. The dense mask was 3.8 GB; **the encoder KV cache at the same size is 53 GB**, because 30 encoder blocks hold 840 KiB per row:
+
+| | 768p/5s (S≈21k) | 768p/10s (S≈41k) | 768p/15s (S≈62k) |
+|---|---|---|---|
+| dense `[S,S]` bool mask | 0.4 GB | 1.7 GB | 3.8 GB |
+| unbounded encoder KV, bf16 | 18 GB | 35 GB | **53 GB** |
+
+So the mask was the visible blocker and the cache was the real one. Measured on the tiny model, a 2-frame window holds the cache at **exactly 53 rows across latent_t 7, 12 and 17** while the sequence grows 191 → 327 → 463. That is §8.1's flat-VRAM claim as an equality, not a trend.
+
+Two things this got wrong first, both worth recording. The window must exempt the CONTEXT rows explicitly: they sit at −inf, which is behind every horizon, so a window that evicts on time alone drops the text and reference rows first and the encoder loses its conditioning one chunk in — with no shape change to notice. The first version of the test asserted a row-count floor, which that mutant clears comfortably; only an exact expected count (53 vs 48) catches it. The test also initially counted audio as context, which is true under the video-only clock and false under the shipping AV clock — the failure was the test's, not the code's.
+
+This **evicts** rather than copying CastleHill's reset-and-re-encode-the-overlap. The two differ in what the retained rows know: an evicted-window row keeps the K/V it was computed with over the full history it actually saw, while a re-encoded overlap row is recomputed against the overlap alone and so knows strictly less. Eviction is also cheaper. What it gives up is the reset's one real property — that a chunk boundary is a clean restart — which matters only if drift accumulates, and is a thing to measure in Phase 5 rather than assume.
+
+Unlike everything else in Phase 2, the window is an **approximation**, not a reassociation: `window=None` is exact against a single masked pass and a windowed run is not. `test_wide_window_is_the_unbounded_cache` pins a window at least as wide as the clip to reproduce `window=None` bit for bit, so the window is a restriction of the exact path rather than a second, subtly different encoder. What a *narrow* window costs on real weights is unmeasured and is the first thing Tier 1 should report.
 
 #### Phase 2 mask cost (2026-08-11) — `docs/phase2_mask_cost.json`
 
@@ -549,6 +576,11 @@ Two findings worth carrying forward: (a) `create_block_mask` **must** be compile
 
 **Watch for:** any need to raise N (denoise steps) to recover quality later will eat the win proportionally. Record the step count assumption explicitly in the benchmark.
 
+**Unblocked 2026-08-11.** Both prerequisites are in: the mask is a compiled FlexAttention `BlockMask` and the KV cache takes a sliding window, so run Tier 1 with `block=True, window=4` — the shipping configuration, not the exact-but-impossible one. Two numbers this must report that the Tier 1 brief above does not ask for:
+
+- **What the window costs.** It is the only approximation in the encoder, and it is currently unmeasured at any size. Sweep `window` 2/4/8/12 against `window=None` at a length where the unbounded cache still fits, and quote centered cos per §7's rule.
+- **KV-cache growth as a flat line, not a slope.** The tiny model holds it at exactly 53 rows across three clip lengths; that is the claim to reproduce at 768p, since it is what makes duration unbounded and it is the first thing an off-by-one in the horizon would break.
+
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
 - `forward_decoder_per_frame` + Fizgig-like LoRA train on small iso set (e.g. 20–50 clips @ **512**, short T).  
@@ -570,7 +602,7 @@ Two findings worth carrying forward: (a) `create_block_mask` **must** be compile
 
 - Chunk loop, overlap, scheduled sampling mature.  
 - Streaming VAE decode — **cheaper than CastleHill's**: H3's visual VAE is already temporally causal (`vae_clip_length: 17`, `vae_token_drop: 3`), so no `streaming_vae_decode_and_save` hack is needed.
-- KV compression / sliding window is **mandatory, not conditional** — see §8.1. Pull it forward into Phase 2 if the Tier 1 benchmark OOMs at 15s.
+- KV compression / sliding window is **mandatory, not conditional** — see §8.1. ~~Pull it forward into Phase 2 if the Tier 1 benchmark OOMs at 15s.~~ Pulled forward on the arithmetic instead of on an OOM: 53 GB at 768p/15s does not need measuring to be disqualifying. The sliding window ships in Phase 2; **KV quantization does not**, and remains the next lever if a 4-frame window is not enough context.
 
 ### Phase 6 — Comfy nodes (optional)
 
@@ -641,7 +673,7 @@ If longer effective context is wanted later, in order of preference:
 3. **Cache a subset of encoder layers**, recompute the rest.
 4. Run the AR path at lower resolution and recover detail with H3-Regenerate-2K.
 
-Fix the window policy in Phase 2 so the Phase 2.5 benchmark measures the real design.
+Fix the window policy in Phase 2 so the Phase 2.5 benchmark measures the real design. **Done (2026-08-11)** — `encode_chunked(..., window=W)`, evicting rather than resetting; see the Phase 2 scale-blockers note. The table above is also optimistic about H3 in one respect: it assumes 33 encoder layers at 1008 tokens per latent frame, and the split landed at **30**, which is where the 840 KiB/row and 53 GB @ 768p/15s figures come from.
 
 ---
 
@@ -672,9 +704,9 @@ Captions: keep triggers for style LoRAs; SCD LoRA is **architecture**, may use s
 
 New, from the code audit:
 
-8. **Encoder KV cache does not fit** at 768p — 58–87 GB naive. Not optional to solve (§8.1).
+8. **Encoder KV cache does not fit** at 768p — 58–87 GB naive. Not optional to solve (§8.1). **Solved 2026-08-11** by the sliding window in `encode_chunked`; at the shipped 30-block split the naive figure is 53 GB at 768p/15s and 840 KiB/row. It was also, by an order of magnitude, the bigger of the two memory blockers — risk 10 got the attention because a mask is easier to picture than a cache.
 9. **Short-clip benchmarks understate by ~3.6×** — Phase 3's 512² training scale measures 1.41× against 5.03× at 768p/15s. Reporting the training-scale number will read as a near-failure. Always benchmark at 768p/10–15s (§2.2.1).
-10. **Dense attention mask is impossible** at 62k². Confirmed empirically in Tier 0: an uncompiled `create_block_mask` OOMs trying to allocate **30 GB** at S=62k and **67 GB** at S=92k (int64 `[S,S]`). Compile it. FlexAttention block masks or nothing (§6.3).
+10. **Dense attention mask is impossible** at 62k². Confirmed empirically in Tier 0: an uncompiled `create_block_mask` OOMs trying to allocate **30 GB** at S=62k and **67 GB** at S=92k (int64 `[S,S]`). Compile it. FlexAttention block masks or nothing (§6.3). **Closed 2026-08-11** — `scd_attention.block_mask`, compiled, pinned to the dense path at 1e-4.
 11. **Comfy's H3 is autograd-hostile** (in-place residual accumulation) — do not try to train through it.
 12. **The paper's premise was measured on causal models**, H3 is bidirectional. Phase 0 axis (b) exists to catch this; it is the most likely cause of a late failure. Confirmed against the paper (§2.1): the probing was run on a teacher-forcing AR conversion of WAN-2.1, so **no published measurement covers a raw bidirectional base**. Corollary risk: zero-shot probes of frozen H3 are budget estimates, not gates — do not cancel or greenlight on them.
 
@@ -690,6 +722,7 @@ New, from the code audit:
 | Phase 0 causal drift | Early-layer features survive frame-causal masking; if not, price in a real retrain |
 | Phase 0 late-layer sparsity | Blocks 33–49 mostly intra-frame attention |
 | **Phase 2 mask cost** | ✅ **PASSED on the `av` clock.** Video centered cos 0.915–0.949 at the encoder cut, flat at 0.997+ through block 25 with a cliff at 30 that independently corroborates the split point. Audio 0.445/0.339 — against 0.047/−0.074 when audio was context, which is what forced the clock change and the §5 D1 amendment |
+| **Phase 2 cache scaling** | ✅ **PASSED on the tiny model.** A 2-frame window holds the cache at exactly 53 rows while the sequence grows 191 → 327 → 463. Equality, not a trend — but at tiny scale; the 768p version of this number is Tier 1's to produce |
 | **Phase 2.5 Tier 0** | ✅ **PASSED** — 3.90× at 768p/10s, 5.03× at 15s (gate was ≥2×) |
 | **Phase 2.5 Tier 1** | Untrained SCD graph materially faster than stock H3 at 768p/15s; peak VRAM flat vs length |
 | Phase 3 sample | Not noise; human “coherent frame” |
@@ -707,7 +740,7 @@ New, from the code audit:
 |----------|--------|
 | ~~This week, $0~~ | ✅ Phase 2.5 **Tier 0** microbenchmark — **done, passed at 3.90×/5.03×** |
 | ~~Next, $0~~ | ✅ Phase 0 three-axis sweep, ✅ Phase 1 skeleton, ✅ Phase 2 mask + cache — all local, all $0 |
-| **Next, $0** | Phase 2.5 **Tier 1** — the untrained SCD graph at 768p/15s on local hardware, now that the mask and cache are settled and the audio row class is decided |
+| **Next, $0** | Phase 2.5 **Tier 1** — the untrained SCD graph at 768p/15s on local hardware, at `block=True, window=4`. No longer blocked: the block mask and the sliding window both landed 2026-08-11, and without them the run would have needed 3.8 GB of mask and 53 GB of cache |
 | **Now** | Keep shipping **H3 LoRAs** (still/short clip) + use **LTX SCD** for long AR if needed |
 | **Research bet** | Fund **Phases 1–4** only after Tier 0 and Phase 0 both pass |
 | **Do not** | Start Comfy UI / full AR before the hypothesis and speed tests |
@@ -720,7 +753,7 @@ Phases 0–2 all run on hardware already owned. Rent only once there is a mask +
 | Phase | Where | Cost |
 |-------|-------|------|
 | 0, 1, 2, 2.5-Tier0 | **Local** (2× PRO 4000, split-GPU along the encoder/decoder cut) | **$0** |
-| 2.5-Tier1 @ 768p/15s | Local if the chunked cache holds; else 1 rented hour | ~$3 |
+| 2.5-Tier1 @ 768p/15s | Local — the windowed cache is what makes it local. a 4-frame window is ~3.4 GB (4 × 1008 rows × 840 KiB) against 53 GB unbounded; the earlier "else 1 rented hour" was pricing the unbounded run | **$0** |
 | 3 — LoRA train | 1× H100 80 GB; ~3 hr/run at 512², T=4–8 | ~$2–3.5/hr → **~$15/run** |
 | 4–5 — M0/M1 at 768p/15s+ | H100 80 GB, or H200 141 GB for 2K | same |
 

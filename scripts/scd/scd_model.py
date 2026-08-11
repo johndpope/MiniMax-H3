@@ -41,7 +41,8 @@ import sys
 import torch
 from torch import nn
 
-from scd_attention import FrameSpans, KVCache, causal_mask, row_time, run_block
+from scd_attention import (CONTEXT, FrameSpans, KVCache, block_mask, causal_mask, row_time,
+                           run_block)
 
 
 class _PreambleDone(Exception):
@@ -166,7 +167,8 @@ class MiniMaxH3SCD(nn.Module):
             h = run_block(block, h, ctx, mask=mask, cache=None if cache is None else cache[i])
         return h, ctx
 
-    def encode_chunked(self, chunk_frames, audio_is_context=False, **forward_kwargs):
+    def encode_chunked(self, chunk_frames, audio_is_context=False, block=False, window=None,
+                       **forward_kwargs):
         """Encode causally in chunks of `chunk_frames` video frames, carrying a KV cache. Returns
         (h, ctx, cache), with `h` back in PACKED row order.
 
@@ -177,13 +179,32 @@ class MiniMaxH3SCD(nn.Module):
         scattered back at the end. Doing it by row slice instead would silently cache rows in an
         order the mask does not describe.
 
-        Under either clock this is not an approximation of a single masked pass, it is the same
-        arithmetic in a different order — `test_chunked_matches_full` asserts that for both.
+        With `window=None` this is not an approximation of a single masked pass, it is the same
+        arithmetic in a different order — `test_chunked_matches_full` asserts that for both clocks.
+
+        `window` is §8.1's policy, and it IS an approximation: keep only the last `window` latent
+        frames of history (plus the context rows, which are never evicted), so the cache stops
+        growing with clip length. It is not optional at scale — 30 encoder blocks hold 840 KiB per
+        row, which is 53 GB at 768p/15s, an order of magnitude past the dense `[S, S]` mask that
+        FlexAttention exists to avoid. Duration is bounded by the window, not by the card.
+
+        This evicts rather than CastleHill's reset-and-re-encode-the-overlap. The two differ in
+        what the retained rows know: an evicted-window row keeps the K/V it was computed with, over
+        the full history it actually saw, while a re-encoded overlap row is recomputed against the
+        overlap alone and so knows strictly less. Eviction is also the cheaper of the two. What it
+        gives up is the reset's one real property — that a chunk boundary is a clean restart — which
+        matters if drift accumulates, and is a thing to measure rather than assume.
 
         The preamble runs ONCE, over the whole clip. Real AR inference cannot do that — later
         frames do not exist yet — so this is the correctness harness for the cache, not the
         inference driver. That driver is Phase 5's, and it must build positions incrementally.
+
+        `block=True` builds each chunk's mask as a FlexAttention `BlockMask` instead of a dense
+        `[Q, K]`. Not a default, because at test sizes it is a compile for no benefit and at Tier 1
+        sizes the dense one does not fit — the flag makes which mask ran a property of the call
+        rather than of a size threshold nobody remembers. `test_block_mask_matches_dense` runs both.
         """
+        build = block_mask if block else causal_mask
         h, ctx, pack = self.preamble(**forward_kwargs)
         sp = self.spans(forward_kwargs["video_latent"], h.shape[0])
         t = self.clock(pack, sp.video_start, audio_is_context).to(h.device)
@@ -199,6 +220,7 @@ class MiniMaxH3SCD(nn.Module):
         t_emb, mod_row, cos, sin = ctx
 
         out = torch.empty_like(h)
+        held = t.new_empty(0)   # times of the rows currently in the cache, in cache order
         start, frame = 0, 0
         while start < len(order):
             frame = min(frame + chunk_frames, sp.latent_t)
@@ -207,12 +229,23 @@ class MiniMaxH3SCD(nn.Module):
             stop = len(order) if frame >= sp.latent_t else \
                 int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
             rows = order[start:stop]
+            chunk_t = ordered_t[start:stop]
             chunk_ctx = (t_emb, mod_row[rows], cos[rows], sin[rows])
-            m = causal_mask(t[rows], ordered_t[:stop])
+            # Keys are what the cache already holds, then this chunk — the order `attention`
+            # appends in. Under a window `held` is no longer `ordered_t[:start]`, so it is tracked
+            # rather than re-derived from the prefix.
+            m = build(chunk_t, torch.cat([held, chunk_t]))
             x = h[rows]
             for i, block in enumerate(self.encoder_blocks):
                 x = run_block(block, x, chunk_ctx, mask=m, cache=cache[i])
             out[rows] = x
+            held = torch.cat([held, chunk_t])
+            if window is not None and frame > window:
+                # Frames [frame-window, frame) survive; so does anything at CONTEXT, which is every
+                # comparison's -inf and would otherwise be the first thing evicted.
+                live = ((held >= frame_t[frame - window]) | (held == CONTEXT)).nonzero().squeeze(1)
+                cache.keep(live)
+                held = held[live]
             start = stop
         return out, ctx, cache
 

@@ -140,6 +140,49 @@ def causal_mask(q_time, k_time, context_sees_video=False):
     return allowed
 
 
+_flex = {}
+
+
+def _flex_ops():
+    """The two compiled FlexAttention entry points, built once.
+
+    `create_block_mask` is compiled because Tier 0 measured the eager path materializing a dense
+    int64 `[S, S]` on its way to the sparse one and OOMing at 30 GB for S=62k — the exact failure
+    the block mask exists to avoid (§6.3, finding 10). Compiled once and reused: the compile is
+    seconds, and at Tier 1 sizes it is paid back on the first block of the first chunk.
+    """
+    if not _flex:
+        from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+        _flex["mask"] = torch.compile(create_block_mask, dynamic=False)
+        _flex["attn"] = torch.compile(flex_attention, dynamic=False)
+    return _flex["mask"], _flex["attn"]
+
+
+def block_mask(q_time, k_time):
+    """`causal_mask`'s rule as a FlexAttention `BlockMask` — the same mask without the `[Q, K]`.
+
+    Dense is correct up to probe sizes and impossible at Tier 1: at 768p/15s S~62k makes a bool
+    `[S, S]` 3.8 GB per call, and the encoder builds one per chunk. A block mask stores only which
+    128x128 tiles are live, and the mask here is close to block-triangular, so almost all of them
+    are skipped rather than computed and thrown away.
+
+    `q_time` and `k_time` are separate tensors rather than one sequence because a chunk's queries
+    are not its keys: the keys are the whole cache and the queries are the new rows. The mask_mod
+    closes over both, which is what lets the same rule serve the full-sequence and chunked paths.
+
+    No `context_sees_video`. The loose mask is a rejected configuration kept for measurement at
+    probe sizes (see the module docstring), and it has no business being made to scale.
+    """
+    build, _ = _flex_ops()
+    q_time = q_time.contiguous()
+    k_time = k_time.contiguous()
+
+    def mask_mod(b, h, q_idx, kv_idx):
+        return k_time[kv_idx] <= q_time[q_idx]
+
+    return build(mask_mod, None, None, q_time.shape[0], k_time.shape[0], device=q_time.device)
+
+
 class LayerCache:
     """One block's K/V for rows already encoded. Post-RoPE, post-q/k-norm — cached at the point
     where the values stop depending on anything a later chunk can change."""
@@ -152,6 +195,17 @@ class LayerCache:
         self.k = k if self.k is None else torch.cat([self.k, k], dim=0)
         self.v = v if self.v is None else torch.cat([self.v, v], dim=0)
         return self.k, self.v
+
+    def keep(self, idx):
+        """Retain only rows `idx`, in that order. The window policy's eviction (§8.1).
+
+        A dropped row is gone, not archived: the point is that the cache stops growing with clip
+        length, and any structure that holds the evicted K/V for later is the unbounded cache
+        wearing a different name. Whatever those rows contributed survives only where it already
+        landed — in the hidden states of the rows that attended to them.
+        """
+        if self.k is not None:
+            self.k, self.v = self.k[idx], self.v[idx]
 
     def __len__(self):
         return 0 if self.k is None else self.k.shape[0]
@@ -173,6 +227,10 @@ class KVCache:
             raise RuntimeError(f"layers hold different row counts: {sorted(n)}")
         return n.pop()
 
+    def keep(self, idx):
+        for c in self.layers:
+            c.keep(idx)
+
     def bytes(self):
         return sum(t.numel() * t.element_size()
                    for c in self.layers for t in (c.k, c.v) if t is not None)
@@ -188,7 +246,12 @@ def attention(attn, x, cos, sin, mask=None, cache=None):
     `cos`/`sin` are the NEW rows' RoPE only. Cached keys were rotated by their own positions when
     they were written, which is the reason the cache stores post-RoPE k: a position-dependent
     tensor cached before rotation would need re-rotating on every read.
+
+    `mask` is either a dense `[Q, K]` bool from `causal_mask` or a `BlockMask` from `block_mask`,
+    and the choice is only ever about size — `test_block_mask_matches_dense` pins the two outputs
+    together. Both go through the same scale, so neither is silently a different attention.
     """
+    from torch.nn.attention.flex_attention import BlockMask
     from fizgig.minimax.model import apply_rope_split_half   # lazy: CI has no fizgig
 
     s = x.shape[0]
@@ -204,7 +267,10 @@ def attention(attn, x, cos, sin, mask=None, cache=None):
     q = q.transpose(0, 1).unsqueeze(0)
     k = k.transpose(0, 1).unsqueeze(0)
     v = v.transpose(0, 1).unsqueeze(0)
-    out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+    if isinstance(mask, BlockMask):
+        out = _flex_ops()[1](q, k, v, block_mask=mask)
+    else:
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
     out = out.squeeze(0).transpose(0, 1).reshape(s, attn.heads * attn.head_dim)
     return attn.out_proj(out)
 
