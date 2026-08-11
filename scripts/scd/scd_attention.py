@@ -332,7 +332,7 @@ def chunk_plan(t, spans, chunk_frames, window=None, keep_audio=False):
 
 
 def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=None,
-                  layer_major=False, keep_audio=False):
+                  layer_major=False, keep_audio=False, checkpoint=False):
     """Run `blocks` over an already-packed stream, causally, in chunks. Returns (out, cache).
 
     Lives here rather than on `MiniMaxH3SCD` because it needs the mask, the cache and the clock —
@@ -357,6 +357,16 @@ def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=No
     They are the same arithmetic — block i's cache accumulates the same K/V from the same chunks
     in the same order either way, because chunk c's input to block i is block i-1's output on
     chunk c and nothing else. `test_layer_major_matches_chunk_major` asserts bit-equality.
+
+    `checkpoint=True` (layer-major only) recomputes each block's activations in the backward pass
+    instead of holding them, which is what makes Phase 3 fit: 30 blocks over ~2100 rows at hidden
+    5376 is ~10 GB of retained activations against ~9.5 GB of NF4 weights on a 24 GB card. The
+    unit of checkpointing is one block over ALL chunks, not one (block, chunk) pair, and that is
+    forced by the cache rather than chosen: the cache is a side effect written during the forward,
+    so a recomputation that re-entered a half-filled cache would append a second copy of every
+    chunk's K/V. At this granularity the cache is created and dies inside the recomputed region,
+    so the backward pass rebuilds it from empty and gets the same tensors. It costs one extra
+    forward through the encoder per step and changes no number — `test_checkpointed_matches_dense`.
 
     What layer-major buys is the entire §8.1 memory problem: the KV cache is 840 KiB per row
     across 30 blocks, but 28 KiB per row across one, so the unbounded cache at 768p/15s drops from
@@ -391,13 +401,24 @@ def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=No
         # Masks depend only on the schedule, so they are built on the first block and reused —
         # otherwise this rebuilds every BlockMask once per block and measures the compiler.
         masks = [None] * len(plan)
+        held = {}
+
+        def one_block(blk, x_in):
+            cache = KVCache(1)
+            out = torch.empty_like(x_in)
+            step(blk, x_in, out, cache[0], masks)
+            held["cache"] = cache
+            return out
+
         x = h
         for blk in blocks:
-            cache = KVCache(1)
-            out = torch.empty_like(x)
-            step(blk, x, out, cache[0], masks)
-            x = out
-        return x, cache
+            if checkpoint:
+                x = torch.utils.checkpoint.checkpoint(one_block, blk, x, use_reentrant=False)
+            else:
+                x = one_block(blk, x)
+        # The last block's cache, as the docstring says. Under checkpointing it is written twice
+        # with identical contents — once per pass — and is one block's worth, not thirty.
+        return x, held["cache"]
 
     cache = KVCache(len(blocks))
     out = torch.empty_like(h)

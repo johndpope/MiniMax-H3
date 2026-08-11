@@ -444,6 +444,65 @@ def test_layer_major_matches_chunk_major(scd, _h, _ctx, sp, mm, _pack):
 
 
 @case
+def test_checkpointed_matches_dense(scd, _h, _ctx, sp, mm, _pack):
+    """Recomputing a block in the backward pass changes no number, and the gradient it produces
+    is the one the retained-activation path produces.
+
+    Both halves matter and the first alone is nearly worthless. Forward equality only says the
+    checkpointed region returns the same tensor, which it would even if the recomputation entered
+    a stale cache and the backward silently used the wrong graph — the failure this granularity
+    was chosen to avoid. The gradient comparison is what actually exercises the recomputation,
+    because that is the only pass in which it runs.
+
+    Swept with the window on and off: eviction is the one thing that makes a chunk's key set
+    depend on cache state carried across chunks, so a recomputation that rebuilt the cache
+    incorrectly diverges there and nowhere else.
+    """
+    inputs = sample_inputs(mm, sp.latent_t)
+    for window in (None, 2):
+        kw = dict(window=window, layer_major=True, **inputs)
+        with torch.no_grad():
+            ref, _, _ = scd.encode_chunked(1, **kw)
+            got, _, _ = scd.encode_chunked(1, checkpoint=True, **kw)
+        assert torch.equal(got, ref), \
+            f"window={window}: checkpointed forward differs by {(got - ref).abs().max():.3e}"
+
+        grads = []
+        for ckpt in (False, True):
+            for p in scd.encoder_blocks.parameters():
+                p.grad = None
+            scd.encode_chunked(1, checkpoint=ckpt, **kw)[0].square().sum().backward()
+            grads.append([p.grad.clone() for p in scd.encoder_blocks.parameters()
+                          if p.grad is not None])
+        assert grads[0] and len(grads[0]) == len(grads[1]), \
+            f"window={window}: {len(grads[0])} vs {len(grads[1])} parameters received gradient"
+        worst = max((a - b).abs().max().item() for a, b in zip(*grads))
+        assert worst < 1e-5, \
+            f"window={window}: checkpointed gradient differs by {worst:.3e} — the recomputed " \
+            "pass is not the pass that ran forward"
+
+    # Everything above passes just as well if `checkpoint=True` quietly does nothing, which is the
+    # cheapest way for this flag to be wrong: the run then OOMs at full scale having been told it
+    # was checkpointed. Counting the attention calls is the direct check — under checkpointing
+    # each block runs twice, once forward and once recomputed in the backward.
+    calls = []
+    handle = scd.encoder_blocks[0].attn.register_forward_hook(lambda *_: calls.append(1))
+    try:
+        for ckpt in (False, True):
+            calls.clear()
+            for p in scd.encoder_blocks.parameters():
+                p.grad = None
+            scd.encode_chunked(1, layer_major=True, checkpoint=ckpt,
+                               **inputs)[0].square().sum().backward()
+            want = 2 if ckpt else 1
+            assert len(calls) == want * sp.latent_t, \
+                f"checkpoint={ckpt}: block 0 attention ran {len(calls)} times over " \
+                f"{sp.latent_t} chunks, want {want} per chunk"
+    finally:
+        handle.remove()
+
+
+@case
 def test_encode_unmasked_is_untouched(scd, _h, _ctx, _sp, mm, _pack):
     """`encode()` with no mask and no cache must still be the plain base prefix — Phase 1's
     prefix-parity guarantee is what the whole split rests on, and Phase 2 must not erode it."""

@@ -84,9 +84,17 @@ class Batch:
         return self.x0 - self.noise
 
 
-def step_loss(scd, mm, batch, *, window, chunk_frames, context_noise, score_first_frame,
-              media_start_on, duplicate_pos):
-    """Flow-matching loss summed over the frames this step scores. Returns (loss, stats).
+def step_backward(scd, mm, batch, *, window, chunk_frames, context_noise, score_first_frame,
+                  media_start_on, duplicate_pos, checkpoint=True):
+    """Flow-matching loss over the frames this step scores, backward included. Returns (loss, stats).
+
+    The backward is here rather than at the call site because it runs in two stages, and the split
+    is the only reason a 7-frame clip fits. Every frame reads the same `enc`, so scoring them all
+    and calling `backward` once holds seven decoder graphs at peak; backing up each frame as it is
+    scored would instead free the ENCODER graph on the first one. Cutting the graph at `enc` gets
+    both: each frame's decoder graph dies when that frame's backward returns, its gradient lands on
+    the detached leaf, and the encoder is replayed once at the end with the accumulated sum. The
+    gradients are identical to the one-shot version -- it is the same sum, associated differently.
 
     `context_noise` is the paper's `c~ = c + eta*zeta` (§2, "context corruption during training"),
     applied to the encoder features the decoder conditions on. It is the only place noise is added
@@ -104,7 +112,7 @@ def step_loss(scd, mm, batch, *, window, chunk_frames, context_noise, score_firs
     clean_kwargs = dict(video_latent=batch.x0, t=torch.tensor([1.0], device=batch.x0.device),
                         text_embeds=batch.text)
     enc, clean_ctx, _ = scd.encode_chunked(chunk_frames, window=window, layer_major=True,
-                                           keep_audio=True, **clean_kwargs)
+                                           keep_audio=True, checkpoint=checkpoint, **clean_kwargs)
     if context_noise:
         enc = enc + context_noise * torch.randn_like(enc)
 
@@ -115,21 +123,62 @@ def step_loss(scd, mm, batch, *, window, chunk_frames, context_noise, score_firs
     target = mm.patchify_video(batch.target, scd.base.patch_size)
 
     first = 0 if score_first_frame else 1
-    loss = batch.x0.new_zeros(())
-    v_sq = 0.0
+    n = spans.latent_t - first
+    leaf = enc.detach().requires_grad_(enc.requires_grad)
+
+    total, v_sq = 0.0, 0.0
     for f in range(first, spans.latent_t):
-        pred = scd.decode_frame(enc, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=True,
+        pred = scd.decode_frame(leaf, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=True,
                                 media_start=pack["media_start"] if media_start_on else None,
                                 duplicate_pos=duplicate_pos)
         want = target[f * r:(f + 1) * r].to(pred.dtype)
-        loss = loss + F.mse_loss(pred.float(), want.float())
+        part = F.mse_loss(pred.float(), want.float()) / n
+        if leaf.requires_grad:
+            part.backward()
+        total += float(part.detach())
         v_sq += float(pred.detach().float().var())
 
-    n = spans.latent_t - first
+    if leaf.grad is not None:
+        enc.backward(leaf.grad)
+
     # v_std is CastleHill's diagnostic: a decoder that collapses reports a velocity variance that
     # falls toward zero while the loss also falls, because predicting the mean beats predicting
     # nothing. Loss alone cannot tell those apart.
-    return loss / n, {"frames": n, "v_std": math.sqrt(v_sq / n), "seq_len": enc.shape[0]}
+    return total, {"frames": n, "v_std": math.sqrt(v_sq / n), "seq_len": enc.shape[0]}
+
+
+EVAL_SIGMAS = (0.25, 0.5, 0.9)
+
+
+def evaluate(scd, mm, clips, names, seed, **kw):
+    """Mean loss over a FIXED (clip, sigma, noise) grid. Returns (mean, per-sigma dict).
+
+    The training loss is unreadable as a curve: sigma is redrawn every step and the flow-matching
+    loss scales hard with it, so consecutive steps differ by 4x for reasons that have nothing to do
+    with learning. Holding sigma and the noise draw fixed is what makes two numbers comparable.
+
+    This is TRAIN loss on TRAIN clips -- 12 of them over 2000 steps is 166 epochs, so it measures
+    that the decoder can fit at all, which is exactly the Phase 3 question. It is not a
+    generalisation number and must not be reported as one.
+
+    `context_noise` is forced to zero here rather than left to the caller. It is a training
+    regulariser, and a fresh `randn` inside a number whose only job is to be comparable across
+    steps would put noise on the one axis being read.
+    """
+    kw = dict(kw, context_noise=0.0)
+    out = {}
+    with torch.no_grad():
+        for s in EVAL_SIGMAS:
+            tot = 0.0
+            for j, name in enumerate(names):
+                clip = clips.load(name, device=next(scd.base.parameters()).device,
+                                  dtype=torch.bfloat16)
+                g = torch.Generator(device=clip["video_latent"].device)
+                g.manual_seed(seed * 7919 + j)
+                tot += step_backward(scd, mm, Batch(clip, s, generator=g),
+                                     score_first_frame=False, **kw)[0]
+            out[f"eval_s{s}"] = round(tot / len(names), 5)
+    return round(sum(out.values()) / len(out), 5), out
 
 
 def build_dry_run():
@@ -157,7 +206,11 @@ def main():
     ap.add_argument("--out", default="runs/scd_v0")
     ap.add_argument("--steps", type=int, default=None, help="default 2000, or 3 under --dry-run")
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--rank", type=int, default=32)
+    # 16, not sd-scripts' usual 32. Rank is charged three times on this card -- factors, gradients
+    # and two AdamW moments, all fp32 -- so 32 is ~1.6 GB against a 12.5 GB resident base, and 155
+    # adapters at rank 16 are still 66 M parameters against 12 clips. Capacity is not the binding
+    # constraint here; memory is.
+    ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--alpha", type=float, default=None, help="default: rank (scale 1.0)")
     ap.add_argument("--window", type=int, default=12,
                     help="encoder KV window in latent frames; 12 is Phase 2's pick off the audio "
@@ -173,9 +226,16 @@ def main():
                     help="give the context half frame f-1's real RoPE rows instead of duplicating "
                          "the target's, which is what CastleHill does and Tier 1 timed")
     ap.add_argument("--sigma-shift", default=None, help="passed to fizgig sample_sigmas")
+    ap.add_argument("--no-checkpoint", action="store_true",
+                    help="hold the encoder's activations instead of recomputing them. Faster per "
+                         "step and does not fit: 30 blocks over ~2100 rows is ~10 GB against "
+                         "~9.5 GB of NF4 weights on a 24 GB card")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--save-every", type=int, default=250)
     ap.add_argument("--log-every", type=int, default=10)
+    ap.add_argument("--eval-every", type=int, default=250)
+    ap.add_argument("--eval-clips", type=int, default=4,
+                    help="first N clips of the fixed eval grid; 3 sigmas each, ~4 s per forward")
     # 0, not the probes' 48. Those drive the base's own forward, which swaps a block in and out
     # around `_run_block`; the SCD path calls `scd_attention.run_block`, which does not. Every
     # block instance has to be resident. 37 of 50 blocks at NF4 is ~8 GB, which leaves room.
@@ -225,6 +285,21 @@ def main():
     gen = torch.Generator(device=device).manual_seed(args.seed)
     cpu_gen = torch.Generator().manual_seed(args.seed)
 
+    step_kw = dict(window=args.window, chunk_frames=args.chunk_frames,
+                   context_noise=args.context_noise, media_start_on=args.decoder_text,
+                   duplicate_pos=not args.own_context_pos, checkpoint=not args.no_checkpoint)
+    eval_names = [] if args.dry_run else order[:args.eval_clips]
+
+    def run_eval(step, log):
+        # eta=0 on the eval grid. Context corruption is a training regulariser; leaving it on would
+        # put a fresh randn into a number whose whole job is to be comparable across steps.
+        mean, per = evaluate(scd, mm, clips, eval_names, args.seed,
+                             **step_kw)
+        log.write(json.dumps({"step": step, "eval": mean, **per}) + "\n")
+        log.flush()
+        print(f"eval  {step:>5}  {mean:.4f}   " +
+              "  ".join(f"{k[5:]} {v:.4f}" for k, v in per.items()), flush=True)
+
     t0 = time.time()
     with open(log_path, "a") as log:
         for step in range(1, args.steps + 1):
@@ -235,26 +310,29 @@ def main():
             sigma = sample_sigmas(1, device, shift=args.sigma_shift, generator=gen)
             batch = Batch(clip_data, sigma.reshape(-1)[0], generator=gen)
 
-            score_first = torch.rand(1, generator=cpu_gen).item() >= args.first_frame_cond_p
-            loss, stats = step_loss(
-                scd, mm, batch, window=args.window, chunk_frames=args.chunk_frames,
-                context_noise=args.context_noise, score_first_frame=score_first,
-                media_start_on=args.decoder_text, duplicate_pos=not args.own_context_pos)
+            if eval_names and (step == 1 or step % args.eval_every == 0):
+                run_eval(step - 1, log)
 
+            score_first = torch.rand(1, generator=cpu_gen).item() >= args.first_frame_cond_p
             opt.zero_grad(set_to_none=True)
-            loss.backward()
+            loss, stats = step_backward(scd, mm, batch, score_first_frame=score_first, **step_kw)
+
             gnorm = torch.nn.utils.clip_grad_norm_(lora_parameters(scd), 1.0)
             opt.step()
+            if not args.dry_run:
+                stats["peak_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
+                torch.cuda.reset_peak_memory_stats()
 
             rec = {"step": step, "clip": batch.name, "sigma": round(batch.sigma, 4),
-                   "loss": float(loss.detach()), "grad_norm": float(gnorm),
+                   "loss": loss, "grad_norm": float(gnorm),
                    "elapsed_s": round(time.time() - t0, 1), **stats}
             log.write(json.dumps(rec) + "\n")
             if step % args.log_every == 0 or step == 1:
                 log.flush()
                 print(f"step {step:>5}  loss {rec['loss']:.4f}  v_std {rec['v_std']:.3f}  "
                       f"sigma {rec['sigma']:.3f}  |g| {rec['grad_norm']:.2e}  "
-                      f"{rec['elapsed_s']:.0f}s  {batch.name}", flush=True)
+                      f"{rec.get('peak_gb', 0):.1f}GB  {rec['elapsed_s']:.0f}s  {batch.name}",
+                      flush=True)
 
             if step % args.save_every == 0 or step == args.steps:
                 from safetensors.torch import save_file
@@ -269,6 +347,9 @@ def main():
                     "duplicate_pos": str(not args.own_context_pos),
                 })
                 print(f"saved       : {path}", flush=True)
+
+        if eval_names:
+            run_eval(args.steps, log)
 
     print(f"done        : {args.steps} steps in {time.time() - t0:.0f}s, log {log_path}")
 

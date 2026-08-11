@@ -77,8 +77,14 @@ class LoRALinear(nn.Module):
         self.scale = alpha / rank
         self.register_buffer("alpha", torch.tensor(float(alpha)))
 
-        self.lora_down = nn.Linear(base.in_features, rank, bias=False, dtype=torch.float32)
-        self.lora_up = nn.Linear(rank, base.out_features, bias=False, dtype=torch.float32)
+        # On the base's device, not the default one. `add_lora` runs after the checkpoint is
+        # already resident on the GPU, and a `.to(device)` afterwards is not a substitute: the
+        # composition parks some blocks on CPU, so a blanket move would drag those back.
+        dev = next((p.device for p in base.parameters()), None)
+        self.lora_down = nn.Linear(base.in_features, rank, bias=False,
+                                   dtype=torch.float32, device=dev)
+        self.lora_up = nn.Linear(rank, base.out_features, bias=False,
+                                 dtype=torch.float32, device=dev)
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
         self.dropout = nn.Dropout(dropout) if dropout else None

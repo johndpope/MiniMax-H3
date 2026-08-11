@@ -178,6 +178,23 @@ def test_alpha_scales_the_update(scd, _mm, _inputs):
 
 
 @case
+def test_adapter_lands_on_the_base_device(_scd, _mm, _inputs):
+    """The factors are created where the base already lives, not on the default device.
+
+    `add_lora` runs after the checkpoint is resident, so a CPU-default adapter on a CUDA base
+    fails at the first matmul — twenty minutes into a run, after the load. `meta` stands in for
+    CUDA here so the case runs anywhere: it is a device the default is not, which is the whole
+    property under test.
+    """
+    from scd_lora import LoRALinear
+
+    base = torch.nn.Linear(6, 4, bias=False, device="meta")
+    wrapped = LoRALinear(base, rank=2)
+    assert wrapped.lora_down.weight.device.type == "meta", \
+        f"adapter built on {wrapped.lora_down.weight.device}, base is on meta"
+
+
+@case
 def test_wraps_any_linear_subclass(_scd, _mm, _inputs):
     """The real base is bnb `Linear4bit`, whose `weight` is a `Params4bit` shell with no usable
     `.data`. The adapter must read only `in_features`/`out_features` and call the module.

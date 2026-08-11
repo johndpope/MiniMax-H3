@@ -776,6 +776,32 @@ Two things that only showed up by testing them:
 
 Ten cases in `test_scd_lora.py`, all mutation-checked: un-zeroing `lora_up`, dropping decoder `adaln`, adding encoder `adaln`, naming the decoder by slot, removing the global freeze, and dropping the output-dtype cast are each caught by the case that names the fault. The freeze is global-then-thaw rather than block-scoped, because the base also carries `final_layer` — which `decode_frame(velocity=True)` runs — and leaving it trainable would fine-tune a 5376-wide output head from 12 clips as a side effect of the loss.
 
+#### The train loop fits in 24 GB, and what had to give (2026-08-11)
+
+`scripts/scd/phase3_train.py` runs, at **15.4 GB peak and 7.7 s/step** on the RTX PRO 4000 Blackwell. Getting there cost two changes and one abandoned hypothesis, and the abandoned one is the useful part of the record.
+
+**The first guess was wrong.** The loop OOM'd at 19.2 GB, so activations were the obvious suspect and `encode_chunks` gained gradient checkpointing — one region per block spanning **all** chunks, because the KV cache is a forward side effect and a per-(block, chunk) region would re-enter a half-filled cache and double-append. That is the right granularity and the mutant that gets it wrong dies loudly (`size of tensor a (214) must match tensor b (23)`). It also barely helped: 18.86 GB against 19.23 GB. Measuring instead of guessing gave the actual budget —
+
+| | GB |
+|---|---|
+| base loaded, 50 blocks NF4 | 16.06 |
+| one block | 0.301 |
+| after the split (30 enc + 7 dec) | 12.02 |
+| after rank-32 LoRA (155 modules, 132.6 M) | 12.52 |
+
+— on a card with ~22.2 GB usable. **Weights, not activations, were the constraint.** Checkpointing stays because it is correct and cheap at this size, but it was not the fix.
+
+The two changes that were:
+
+- **Rank 16, not 32.** Rank is charged four times over — factors, gradients, and two AdamW moments, all fp32 — so 32 is ~1.6 GB of a 12.5 GB-resident model's remaining headroom. 155 adapters at rank 16 are still 66.3 M parameters against 12 clips; capacity was never what bound this.
+- **A two-stage backward.** All seven frames read the same `enc`, which leaves a choice between holding seven decoder graphs to the end of the step or freeing the encoder graph on the first frame. Detaching `enc` into a leaf gets neither: each frame's graph dies as that frame is scored, its gradient accumulates on the leaf, and the encoder is replayed once with the sum. Gradients are **bit-identical** to the one-shot version — the same sum, associated differently — which is why the equality is asserted rather than argued.
+
+That bit-identity is also why the memory property needs its own test. `part.backward(retain_graph=True)` produces exactly the same gradients and OOMs on the real card, so no gradient comparison can see it. `test_frames_are_freed_as_they_are_scored` counts instead: every tensor autograd saves is wrapped and a weakref fires when the graph holding it dies, giving peak-live/total of **0.46 cut against 0.99 retained**.
+
+The run also logs a **fixed (clip, σ, noise) eval grid** every 250 steps, because the training loss is not readable as a curve — σ is redrawn every step and the flow-matching loss scales hard with it, so consecutive steps differ by 4× for reasons unrelated to learning. `evaluate` forces `context_noise=0` itself rather than trusting the caller. It is train loss on train clips (12 clips over 2000 steps is 166 epochs) and measures that the decoder can **fit** at all, which is the Phase 3 question; it is not a generalisation number.
+
+Seven cases in `test_phase3_train.py`, nine mutants, all caught — including the flow-target sign flip, which is the one that would have cost the whole run: it trains the ODE backwards, the loss falls at exactly the same rate, every diagnostic looks healthy, and only sampling reveals it.
+
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
 - `forward_decoder_per_frame` + Fizgig-like LoRA train on small iso set (e.g. 20–50 clips @ **512**, short T).  

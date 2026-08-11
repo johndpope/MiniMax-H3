@@ -170,7 +170,7 @@ class MiniMaxH3SCD(nn.Module):
         return h, ctx
 
     def encode_chunked(self, chunk_frames, audio_is_context=False, block=False, window=None,
-                       layer_major=False, keep_audio=False, **forward_kwargs):
+                       layer_major=False, keep_audio=False, checkpoint=False, **forward_kwargs):
         """Encode causally in chunks of `chunk_frames` video frames, carrying a KV cache. Returns
         (h, ctx, cache), with `h` back in PACKED row order.
 
@@ -224,7 +224,7 @@ class MiniMaxH3SCD(nn.Module):
         t = self.clock(pack, sp.video_start, audio_is_context).to(h.device)
         out, cache = encode_chunks(self.encoder_blocks, h, ctx, t, sp, chunk_frames,
                                    block=block, window=window, layer_major=layer_major,
-                                   keep_audio=keep_audio)
+                                   keep_audio=keep_audio, checkpoint=checkpoint)
         return out, ctx, cache
 
     def decode(self, h, ctx):
