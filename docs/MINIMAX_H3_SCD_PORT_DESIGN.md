@@ -166,7 +166,9 @@ Audio: run the **encoder at σ=0 over clean video *and* audio rows**, then decod
 
 **Rationale:** CastleHill's payoff was visual AR length; H3's product is native stereo AV. Full *causal* AV SCD (audio also frame-causal) remains out of scope for v0.
 
-> **Amended 2026-08-11 by the Phase 2 mask-cost measurement.** "Audio rides the shared encoder cache" is still the right shape, but the cache is emptier than this decision assumed. Because audio rows are *context* under the frame-causal mask, they are blind to video, and the encoder's audio rows come out with centered cos **0.047 / −0.074** against a bidirectional pass — no video conditioning at all. The second decoder pass therefore inherits no audio–video fusion and has to create all of it in 7 blocks. The fix is to stop treating audio as context and give it frame indices on its own 40 Hz clock, which keeps the mask leak-free in both directions; that promotes the "out of scope for v0" clause above into a decision that has to be made before Phase 3. See Phase 2 for the numbers and the rejected cheap alternative.
+> **Amended 2026-08-11 by the Phase 2 mask-cost measurement.** "Audio rides the shared encoder cache" is still the right shape, but the cache was emptier than this decision assumed. Treating audio as *context* makes it blind to video by construction, and the encoder's audio rows measured centered cos **0.047 / −0.074** against a bidirectional pass — no video conditioning at all, so the second decoder pass would have inherited no audio–video fusion and had to create every bit of sync in 7 blocks.
+>
+> **Audio is therefore ordered, not context**, on its own 40 Hz spans (Phase 2's `av` clock), which brings those rows to **0.445 / 0.339** while keeping the mask causal in both directions and the KV cache sound. Video pays ~0.03 of centered cos. The "full *causal* AV out of scope for v0" clause below is what this overturns: audio is now causal in the ENCODER. It stays bidirectional in the DECODER, which is the part D1 was really about, and the speed argument is untouched.
 
 ### D2 — Two products, two codebases (until proven)
 
@@ -481,7 +483,7 @@ Design notes worth carrying forward:
 - **One rule covers both row kinds.** Context rows carry frame index `-1` and video rows `0..T-1`, so `visible = (k < 0) | (k <= q)` is simultaneously "context is always visible" and "context is blind to video" — the second falls out because no video key satisfies `k <= -1`.
 - **The mask never re-implements a block.** `run_block` substitutes `attn.forward` for the duration of one call and restores it in `finally`, so AdaLN modulation, the gated residuals and the MLP stay the base's own code. Phase 0's probe hand-copied that block body, which is the drift this phase exists to stop repeating.
 - **The cache stores post-RoPE keys**, the point at which they stop depending on anything a later chunk can change. `test_cache_holds_post_rope_keys` separates this from the variant that caches pre-rotation and forgets to re-rotate — which yields plausible video at the wrong positions, not garbage.
-- **Audio is context by scope, not by nature.** §4 keeps v0's audio bidirectional, so this encoder is frame-causal in *video* only. Fully causal AV needs audio spans on the 40 Hz clock — filed as a v1 item when this was written, and no longer optional once the real-weights numbers came in (see "Phase 2 mask cost" below).
+- **Audio was context by scope, not by nature — and that turned out to be the wrong scope.** Filed here as a v1 item on the assumption that a video-only encoder was enough for v0; the real-weights numbers said otherwise within the day, and audio now runs ordered on its own 40 Hz spans. `row_time`'s `video_start` argument still builds the video-only clock, kept so the rejected option keeps a measurement rather than a memory.
 - **`encode_chunked` runs the preamble once over the whole clip**, which real AR inference cannot do — later frames do not exist yet. It is the correctness harness for the cache, not the inference driver; Phase 5's driver has to build positions incrementally.
 
 Still open, deliberately: the mask is **dense**. At 768p, S≈62k makes an `[S, S]` bool 3.8 GB, so FlexAttention `create_block_mask` is the shipping path (§6.3) — `FrameSpans.frame_index()` is already the `mask_mod` it needs, so that swap is local to `attention()`. The §8.1 chunk-reset policy is also not implemented: `KVCache` grows monotonically, which is right for a single clip and is exactly what OOMs at 10 s if anyone ships it as-is.
@@ -509,7 +511,23 @@ Centered cos throughout, using `phase0_validate`'s own definitions. This matters
 
 The number itself is not a bug — it is the strict mask's definition showing up in the output. Context rows are blind to video, audio rows *are* context (§4 keeps v0's audio bidirectional), so the encoder's audio rows see text and audio and nothing else. Zero video conditioning produces exactly this. What it costs is concrete: **the encoder cache carries no audio–video fusion, so every bit of AV sync has to be created by the decoder's 7 blocks.** §4 assumed the audio pass could read a jointly-encoded cache; it cannot.
 
-The named remedy is the one already listed as a v1 item, promoted by this measurement from an elegance to the thing that pays for sync: give audio rows **their own frame index on the 40 Hz clock** instead of `CONTEXT`. Audio at frame *f* sees video ≤ *f* and video at frame *f* sees audio ≤ *f* — causal in both directions, so no future leaks backward and the leak table above is not reopened, while audio keeps its video conditioning. The cheap alternative (let audio queries see all video, leave video queries causal) is the loose mask under another name and fails for the same reason. Decide this before Phase 3 trains anything, because it changes what the encoder cache contains.
+**Resolved the same day: audio gets its own clock (the `av` mask).** Audio rows are ordered on their own 40 Hz spans instead of exempt from order, so audio at time *t* sees video ≤ *t* and video at time *t* sees audio ≤ *t*. Causal in both directions means nothing carries the future backward, so the leak table above is not reopened — `test_av_clock_composes_across_blocks` asserts prefix-exactness through the whole encoder, the same bar the strict mask has to clear. The rejected cheap alternative, letting audio queries see all video while video stays causal, is the loose mask under another name and fails for the same reason: audio at the end of the clip has absorbed the whole clip, and any video row that can see it has read the future.
+
+Measured on the same clip and grid, all three clocks in one run:
+
+| at block 29 (encoder output) | loose | strict (v0) | **av (v1)** |
+|---|---|---|---|
+| video centered cos, σ=0.571 / 0.923 | 0.992 / 0.996 | 0.952 / 0.972 | **0.915 / 0.949** |
+| video relative L2 | 0.039 / 0.043 | 0.096 / 0.100 | **0.128 / 0.133** |
+| audio centered cos | 0.986 / 0.968 | 0.047 / −0.074 | **0.445 / 0.339** |
+
+So it is a trade, and it should be described as one. Audio goes from **uncorrelated to substantially correlated** — 0.05 → 0.44 — and the curve now *plateaus* around 0.44/0.34 from block 10 onward instead of sitting at noise. Video pays about 0.03 of centered cos and a third more relative L2, because ordering audio also takes *future* audio away from the video rows, which the strict mask let them keep.
+
+The residual gap to `loose` is not a defect to engineer away. Causal audio genuinely cannot see future video; the bidirectional pass is a **ceiling no causal mask can reach**, not a target being missed. The question the number answers is whether the encoder cache carries real audio–video information for D1's second pass to reuse, and 0.44 says yes where 0.05 said no.
+
+The implementation turned out to be smaller than the decision. H3's packer **already** puts audio and video on a shared rotary axis — `image_position_ids` advances audio 1.0 per latent and lays video frames on `_video_t_grid`'s (1,4,4,4,4)×5/3 spans, chosen so 17 pixel frames = 5 latents = 28.33 rotary units ≈ 28 audio latents. So the second clock is not built, it is **read**: `row_time` takes `pos[:, 0]` and sets context rows to −∞, and the whole mask rule collapses to `k <= q`, with "context is always visible" and "context is blind to the ordered rows" becoming the same inequality read from its two ends. A rows-per-frame ratio computed by hand would have been a rounding error with a plausible story; this cannot drift from the packer because it *is* the packer's answer.
+
+What it costs is in `encode_chunked`. Chunks are cut on time, and under the AV clock time order is no longer row order — audio and video interleave in time while sitting in separate slabs of `[context | audio | video]`. So a chunk is a gather, the cache fills in time order, and the result is scattered back to packed order at the end. Under the video-only clock the two coincide, which is exactly why the mutant that reverts to row slicing passes every video-only check and fails only `test_chunked_matches_full` on the AV clock.
 
 Past block 29 the two masks separate hard (video centered cos 0.63 strict vs 0.89 loose at block 49), which is a property of blocks the SCD encoder does not run and is recorded only so the curve is not mistaken for an encoder number later.
 
@@ -671,7 +689,7 @@ New, from the code audit:
 | Phase 0 σ-invariance | Early layers: high cos-sim across σ; late: low |
 | Phase 0 causal drift | Early-layer features survive frame-causal masking; if not, price in a real retrain |
 | Phase 0 late-layer sparsity | Blocks 33–49 mostly intra-frame attention |
-| **Phase 2 mask cost** | ⚠️ **SPLIT RESULT.** Video passes — centered cos 0.95–0.97 at the encoder cut, flat at 0.998 through block 25, cliff at 30 (independently corroborating the split point). Audio fails — 0.047 / −0.074, the strict mask leaves the encoder's audio rows with no video conditioning at all. §5 D1 amended |
+| **Phase 2 mask cost** | ✅ **PASSED on the `av` clock.** Video centered cos 0.915–0.949 at the encoder cut, flat at 0.997+ through block 25 with a cliff at 30 that independently corroborates the split point. Audio 0.445/0.339 — against 0.047/−0.074 when audio was context, which is what forced the clock change and the §5 D1 amendment |
 | **Phase 2.5 Tier 0** | ✅ **PASSED** — 3.90× at 768p/10s, 5.03× at 15s (gate was ≥2×) |
 | **Phase 2.5 Tier 1** | Untrained SCD graph materially faster than stock H3 at 768p/15s; peak VRAM flat vs length |
 | Phase 3 sample | Not noise; human “coherent frame” |
@@ -689,7 +707,7 @@ New, from the code audit:
 |----------|--------|
 | ~~This week, $0~~ | ✅ Phase 2.5 **Tier 0** microbenchmark — **done, passed at 3.90×/5.03×** |
 | ~~Next, $0~~ | ✅ Phase 0 three-axis sweep, ✅ Phase 1 skeleton, ✅ Phase 2 mask + cache — all local, all $0 |
-| **Next, $0** | Decide the audio row class (context vs its own 40 Hz frame index) — Phase 2 showed it changes what the encoder cache contains, so it has to land before Phase 3 trains against that cache |
+| **Next, $0** | Phase 2.5 **Tier 1** — the untrained SCD graph at 768p/15s on local hardware, now that the mask and cache are settled and the audio row class is decided |
 | **Now** | Keep shipping **H3 LoRAs** (still/short clip) + use **LTX SCD** for long AR if needed |
 | **Research bet** | Fund **Phases 1–4** only after Tier 0 and Phase 0 both pass |
 | **Do not** | Start Comfy UI / full AR before the hypothesis and speed tests |

@@ -35,11 +35,13 @@ Usage:
 """
 
 import copy
+import inspect
+import sys
 
 import torch
 from torch import nn
 
-from scd_attention import FrameSpans, KVCache, causal_mask, run_block
+from scd_attention import FrameSpans, KVCache, causal_mask, row_time, run_block
 
 
 class _PreambleDone(Exception):
@@ -97,12 +99,19 @@ class MiniMaxH3SCD(nn.Module):
         return len(self.base.blocks) + len(self.decoder_blocks)
 
     def preamble(self, **forward_kwargs):
-        """Run the base's input packing and stop at the first block. Returns (h, ctx).
+        """Run the base's input packing and stop at the first block. Returns (h, ctx, pack).
 
         `ctx` is `(t_emb, mod_row, cos, sin)` — the per-block arguments the base built, captured
         from its own first block rather than recomputed, so this cannot drift from the preamble.
         The hook raises to abort: the preamble is what we want and the 50 blocks behind it are
         not, and at 768p running them to throw the result away is minutes of GPU time.
+
+        `pack` is `{"pos", "media_start"}`, captured the same way and for the same reason. The
+        mask needs a time per row, and the packer is the only thing that knows how the 40 Hz
+        audio spans line up against `_video_t_grid`'s fractional video spans; the alternative is
+        a rows-per-frame ratio computed here, which would be a rounding error with a plausible
+        story. `media_start` comes out of the captured ARGUMENTS (`text_len + ref_row_count`)
+        rather than by pattern-matching the positions back into segments.
         """
         cap = {}
 
@@ -110,20 +119,40 @@ class MiniMaxH3SCD(nn.Module):
             cap["h"], cap["ctx"] = args[0], tuple(args[1:])
             raise _PreambleDone
 
+        mm = sys.modules[type(self.base).__module__]
+        real_pos = mm.image_position_ids
+        sig = inspect.signature(real_pos)
+
+        def spy(*args, **kwargs):
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            cap["media_start"] = (bound.arguments["text_len"]
+                                  + mm.ref_row_count(bound.arguments["refs"]))
+            cap["pos"] = real_pos(*args, **kwargs)
+            return cap["pos"]
+
         handle = self.base.blocks[0].register_forward_pre_hook(grab)
+        mm.image_position_ids = spy
         try:
             self.base(**forward_kwargs)
         except _PreambleDone:
             pass
         finally:
             handle.remove()
-        return cap["h"], cap["ctx"]
+            mm.image_position_ids = real_pos
+        return cap["h"], cap["ctx"], {"pos": cap["pos"], "media_start": cap["media_start"]}
 
     def spans(self, video_latent, seq_len):
         """`FrameSpans` for a packed sequence of `seq_len` rows holding this video latent."""
         _, _, latent_t, lat_h, lat_w = video_latent.shape
         ph, pw = self.base.patch_size[1], self.base.patch_size[2]
         return FrameSpans(seq_len, latent_t, (lat_h // ph) * (lat_w // pw))
+
+    def clock(self, pack, video_start, audio_is_context):
+        """Per-row time for the mask. `audio_is_context` picks v0's video-only clock over the AV
+        clock; see `scd_attention.row_time` for what that costs the audio rows."""
+        return row_time(pack["pos"][:, 0], pack["media_start"],
+                        video_start if audio_is_context else None)
 
     def encode(self, *, mask=None, cache=None, **forward_kwargs):
         """Run the base preamble and the encoder prefix. Returns (h, ctx).
@@ -132,44 +161,60 @@ class MiniMaxH3SCD(nn.Module):
         is the base's first `encoder_depth` blocks exactly — `test_prefix_parity` holds by
         construction rather than by the masked path happening to be equivalent.
         """
-        h, ctx = self.preamble(**forward_kwargs)
+        h, ctx, _ = self.preamble(**forward_kwargs)
         for i, block in enumerate(self.encoder_blocks):
             h = run_block(block, h, ctx, mask=mask, cache=None if cache is None else cache[i])
         return h, ctx
 
-    def encode_chunked(self, chunk_frames, **forward_kwargs):
-        """Encode frame-causally in chunks of `chunk_frames`, carrying a KV cache. Returns
-        (h, ctx, cache), where `h` is the full sequence reassembled.
+    def encode_chunked(self, chunk_frames, audio_is_context=False, **forward_kwargs):
+        """Encode causally in chunks of `chunk_frames` video frames, carrying a KV cache. Returns
+        (h, ctx, cache), with `h` back in PACKED row order.
 
-        The first chunk carries the context rows; later chunks are video rows only, and read the
-        earlier rows out of the cache. Under the strict mask this is not an approximation of a
-        single masked pass, it is the same arithmetic in a different order, which is what
-        `test_chunked_matches_full` asserts.
+        Chunks are cut on TIME, not on rows. Under the video-only clock those coincide, because
+        the packed order `[context | audio | video]` is already the causal order. Under the AV
+        clock they do not: audio and video interleave in time while staying in separate slabs of
+        the sequence, so a chunk is a gather, the cache fills in time order, and the result is
+        scattered back at the end. Doing it by row slice instead would silently cache rows in an
+        order the mask does not describe.
+
+        Under either clock this is not an approximation of a single masked pass, it is the same
+        arithmetic in a different order — `test_chunked_matches_full` asserts that for both.
 
         The preamble runs ONCE, over the whole clip. Real AR inference cannot do that — later
         frames do not exist yet — so this is the correctness harness for the cache, not the
         inference driver. That driver is Phase 5's, and it must build positions incrementally.
         """
-        h, ctx = self.preamble(**forward_kwargs)
+        h, ctx, pack = self.preamble(**forward_kwargs)
         sp = self.spans(forward_kwargs["video_latent"], h.shape[0])
-        frames = sp.frame_index(h.device)
+        t = self.clock(pack, sp.video_start, audio_is_context).to(h.device)
+        frame_t = t[sp.video_start::sp.frame_rows]
+
+        # Stable for a reproducible cache layout, not for correctness: the mask reads times and
+        # nothing else, so rows sharing a time may be permuted freely and a mutant that shuffles
+        # them passes every test here. Reproducibility is still worth having when the cache
+        # becomes something Phase 5 carries across calls.
+        order = torch.argsort(t, stable=True)
+        ordered_t = t[order]
         cache = KVCache(len(self.encoder_blocks))
         t_emb, mod_row, cos, sin = ctx
 
-        out = []
-        start = 0
-        while start < sp.latent_t:
-            stop = min(start + chunk_frames, sp.latent_t)
-            rows = slice(0, sp.rows_for_frames(0, stop).stop) if start == 0 \
-                else sp.rows_for_frames(start, stop)
+        out = torch.empty_like(h)
+        start, frame = 0, 0
+        while start < len(order):
+            frame = min(frame + chunk_frames, sp.latent_t)
+            # Everything not later than the last video frame in this chunk — which sweeps up the
+            # audio rows that share or precede its time, and on the first pass the context rows.
+            stop = len(order) if frame >= sp.latent_t else \
+                int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
+            rows = order[start:stop]
             chunk_ctx = (t_emb, mod_row[rows], cos[rows], sin[rows])
-            m = causal_mask(frames[rows], frames[:rows.stop])
+            m = causal_mask(t[rows], ordered_t[:stop])
             x = h[rows]
             for i, block in enumerate(self.encoder_blocks):
                 x = run_block(block, x, chunk_ctx, mask=m, cache=cache[i])
-            out.append(x)
+            out[rows] = x
             start = stop
-        return torch.cat(out, dim=0), ctx, cache
+        return out, ctx, cache
 
     def decode(self, h, ctx):
         """Run the decoder re-composition over encoder output. Same block signature as the base."""

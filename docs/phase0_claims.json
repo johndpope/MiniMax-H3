@@ -461,5 +461,53 @@
   "index": 0,
   "expected": 0.89,
   "tol": 0.005
+ },
+ {
+  "id": "p2-av-ccos-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_ccos_video_at_encoder",
+  "index": 0,
+  "expected": 0.915,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-av-ccos-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_ccos_video_at_encoder",
+  "index": 1,
+  "expected": 0.949,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-av-rell2-video-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_rel_l2_video_at_encoder",
+  "index": 0,
+  "expected": 0.128,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-av-rell2-video-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_rel_l2_video_at_encoder",
+  "index": 1,
+  "expected": 0.133,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-av-ccos-audio-s571",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_ccos_audio_at_encoder",
+  "index": 0,
+  "expected": 0.445,
+  "tol": 0.001
+ },
+ {
+  "id": "p2-av-ccos-audio-s923",
+  "file": "docs/phase2_mask_cost.json",
+  "key": "av_ccos_audio_at_encoder",
+  "index": 1,
+  "expected": 0.339,
+  "tol": 0.001
  }
 ]

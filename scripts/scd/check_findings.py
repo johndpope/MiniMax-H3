@@ -113,7 +113,7 @@ def check_mask_cost(path, p, errs):
     """
     n = p.get("n_blocks")
     for sigma, by_mask in p.get("by_sigma", {}).items():
-        for mask in ("strict", "loose"):
+        for mask in ("strict", "loose", "av"):
             if mask not in by_mask:
                 errs.append(f"{path}: sigma {sigma} has no {mask!r} curve to compare against")
                 continue
@@ -130,7 +130,7 @@ def check_mask_cost(path, p, errs):
     # would silently move every claim onto the wrong sigma.
     n_sigma = len(p.get("sigmas", []))
     for k, v in p.items():
-        if k.startswith(("strict_", "loose_")) and isinstance(v, list) and len(v) != n_sigma:
+        if k.startswith(("strict_", "loose_", "av_")) and isinstance(v, list) and len(v) != n_sigma:
             errs.append(f"{path}: {k} has {len(v)} entries for {n_sigma} sigmas — re-run "
                         f"`phase2_mask_cost.py --flatten-only {path}`")
 

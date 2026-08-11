@@ -13,8 +13,18 @@ query the two masks are identical row for row. The cost shows up cumulatively, t
 context rows, which is what this measures: every block's output under each mask against the
 unmasked bidirectional pass at the same inputs.
 
-Uses `scd_attention.causal_mask` — the mask the encoder will actually run — rather than a second
-copy written for the measurement.
+Three clocks, because that first measurement produced a second finding. Blinding the context rows
+also blinds the AUDIO rows, which are context under §5 D1, and on real weights that costs them all
+of their video conditioning. So `av` is measured beside the other two: audio ordered on its own
+40 Hz spans instead of exempt from order, causal in both directions and therefore still leak-free.
+
+    loose    only video queries restricted        — Phase 0's, rejected, kept for its number
+    strict   context (incl. audio) blind to video — v0
+    av       audio ordered on the 40 Hz clock     — v1
+
+Uses `scd_attention.causal_mask` and `row_time` — what the encoder will actually run — rather than
+a second copy written for the measurement. `row_time` reads the packer's own rotary t-axis, on
+which the audio and video clocks are already commensurate.
 
 Usage:
     python3 scripts/scd/phase2_mask_cost.py \
@@ -37,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from phase0_probe import (build_stream, cos_rows, import_fizgig,  # noqa: E402
                           load_latents, load_text, sweep_stack)
 from phase0_validate import centered_cos, common_mode  # noqa: E402
-from scd_attention import FrameSpans, causal_mask  # noqa: E402
+from scd_attention import FrameSpans, causal_mask, row_time  # noqa: E402
 
 
 def rel_l2(a, b):
@@ -69,6 +79,7 @@ def score(outs, refs, n_audio):
     }
 
 
+MASKS = ("loose", "strict", "av")
 FLAT_METRICS = ("cos_video", "ccos_video", "rel_l2_video", "cos_audio", "ccos_audio",
                 "common_mode_video")
 
@@ -84,7 +95,7 @@ def derive_flat(payload):
     e = payload["encoder_depth"] - 1
     last = payload["n_blocks"] - 1
     order = [f"{s:.10f}" for s in payload["sigmas"]]
-    for mask in ("strict", "loose"):
+    for mask in MASKS:
         for metric in FLAT_METRICS:
             curves = [payload["by_sigma"][k][mask][metric] for k in order]
             payload[f"{mask}_{metric}_at_encoder"] = [c[e] for c in curves]
@@ -142,15 +153,24 @@ def main():
         sp = FrameSpans(stream["seq_len"], stream["latent_t"], stream["frame_rows"])
         assert sp.video_start == stream["video_start"], \
             f"FrameSpans says {sp.video_start}, the packer says {stream['video_start']}"
-        frames = sp.frame_index(device)
         n_audio = stream["video_start"] - stream["audio_start"]
+        pos_t = stream["pos"][:, 0]
+        clocks = {
+            # Phase 0's mask: only video queries restricted. Leaks across blocks; measured so the
+            # rejected option keeps a number rather than a memory.
+            "loose": (sp.frame_index(device), True),
+            # v0: audio joins the context, so it is blind to video.
+            "strict": (row_time(pos_t, stream["audio_start"], stream["video_start"]), False),
+            # v1: audio ordered on its own 40 Hz spans, causal in both directions.
+            "av": (row_time(pos_t, stream["audio_start"]), False),
+        }
         print(f"sigma={sigma:.4f}  S={sp.seq_len}  video_start={sp.video_start}  "
               f"frames={sp.latent_t}x{sp.frame_rows}", flush=True)
 
         ref, _ = sweep_stack(model, mm, stream, None, device, keep_full=False)
         out = {}
-        for name, loose in (("strict", False), ("loose", True)):
-            mask = causal_mask(frames, frames, context_sees_video=loose)
+        for name, (clock, loose) in clocks.items():
+            mask = causal_mask(clock, clock, context_sees_video=loose)
             masked, _ = sweep_stack(model, mm, stream, mask, device, keep_full=False)
             out[name] = score(masked, ref, n_audio)
             e = args.encoder_depth - 1

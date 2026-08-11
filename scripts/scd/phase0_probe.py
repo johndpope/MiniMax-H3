@@ -226,6 +226,9 @@ def build_stream(mm, model, video_latent, text_embeds, sigma, device, dtype):
     return {"h": h, "t_emb": t_emb, "mod_row": mod_row, "cos": cos.to(dtype), "sin": sin.to(dtype),
             "seq_len": seq_len, "video_start": video_start, "audio_start": audio_start,
             "frame_rows": (lat_h // 2) * (lat_w // 2), "latent_t": latent_t,
+            # the packer's own t-axis, on which audio and video are already commensurate —
+            # scd_attention.row_time reads the AV clock straight off it
+            "pos": pos,
             # eps and the video timestep row are needed to score a real flow-matching loss
             # through final_layer (phase0_leaveout.py); the cos-sim probes ignore them.
             "eps": eps, "video_t_index": int(inverse[0])}

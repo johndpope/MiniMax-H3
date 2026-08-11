@@ -22,6 +22,20 @@ difference between a cache that is a cache and a cache that is a plausible-looki
 leak, chunk 2's context rows differ from chunk 1's and the cached K/V are stale in a way no
 shape check can see. `test_scd_attention.py` pins both halves.
 
+Which rows count as "context" is then a design choice, and it turned out to be a load-bearing one.
+Putting AUDIO there — v0's plan, since §5 D1 decodes audio in a second bidirectional pass — makes
+it blind to video by construction, and on real weights the encoder's audio rows come out at
+centered cos 0.047 / -0.074 against a bidirectional pass: no video conditioning whatsoever, so the
+encoder cache holds no audio-video fusion for that second pass to reuse. `row_time` therefore also
+builds the AV clock, where audio is ORDERED on its own 40 Hz spans rather than exempt from order.
+Both modalities causal on a shared time axis is still leak-free — nothing carries the future
+backward — and audio comes back to 0.445 / 0.339. Not to the bidirectional 0.99, and it cannot:
+causal audio genuinely cannot see future video, so that pass is a ceiling rather than a target.
+Video pays about 0.03 of centered cos for it, having lost future audio. The rejected middle
+option, letting audio queries see all video while video stays causal, is the loose mask above
+wearing a hat — audio at the end of the clip has absorbed all of it, and any video row that can
+read those rows has read the future.
+
 The mask here is DENSE. That is correct at probe and test sizes and hopeless at 768p, where
 S~62k makes an [S, S] bool 3.8 GB (§6.3). FlexAttention's `create_block_mask` is the shipping
 path; `frame_index()` is already the `mask_mod` this needs, so that swap is local to `attention`.
@@ -30,14 +44,13 @@ path; `frame_index()` is already the `mask_mod` this needs, so that swap is loca
 import torch
 import torch.nn.functional as F
 
-# Frame index for rows that are not video: text, r2v references, audio. Shared context — visible
-# to every query, and blind to video.
+# Time for rows outside the causal order: text and r2v references, and — under the video-only
+# clock — audio. Visible to every query, blind to everything ordered.
 #
-# Audio sits here by SCOPE, not by nature. §4 keeps v0's audio bidirectional (a second decoder
-# pass over the same encoder cache), so audio rows are encoded once and every video frame sees
-# all of them. Fully causal AV would give audio its own spans on the 40 Hz clock and is a v1
-# item; the consequence to remember is that this encoder is frame-causal in VIDEO only.
-CONTEXT = -1
+# -inf rather than a magic index, so the same sentinel works on the integer frame clock and on
+# the packer's real-valued rotary clock, and so `k <= q` needs no special case at either end:
+# a context KEY precedes everything, and a context QUERY is preceded by nothing but context.
+CONTEXT = float("-inf")
 
 
 class FrameSpans:
@@ -61,10 +74,16 @@ class FrameSpans:
         self.video_start = seq_len - n_video
 
     def frame_index(self, device=None):
-        """[seq_len] long: CONTEXT for context rows, 0..latent_t-1 for video rows."""
+        """[seq_len] float: CONTEXT for every non-video row, 0..latent_t-1 for video rows.
+
+        The video-only clock, and shape-derived — it needs no packer positions, which is why the
+        CPU tests can build it from a latent shape alone. `row_time(..., audio_is_context=True)`
+        is the same mask from the packer's real positions; `test_clocks_agree_on_video_only`
+        pins them equal so the two cannot drift apart.
+        """
         idx = torch.arange(self.seq_len, device=device)
-        vid = (idx - self.video_start).div(self.frame_rows, rounding_mode="floor")
-        return torch.where(idx >= self.video_start, vid, torch.full_like(idx, CONTEXT))
+        vid = (idx - self.video_start).div(self.frame_rows, rounding_mode="floor").float()
+        return torch.where(idx >= self.video_start, vid, torch.full_like(vid, CONTEXT))
 
     def rows_for_frames(self, start, stop):
         """Row slice of video frames [start, stop) — the unit a chunk is cut on."""
@@ -76,22 +95,48 @@ class FrameSpans:
                 f"latent_t={self.latent_t}, frame_rows={self.frame_rows})")
 
 
-def causal_mask(q_frames, k_frames, context_sees_video=False):
-    """[Q, K] bool, True = attend. Frame indices as returned by `FrameSpans.frame_index`.
+def row_time(pos_t, media_start, video_start=None):
+    """[S] float: each row's time on the packer's own rotary t-axis, context rows at CONTEXT.
 
-    One rule covers both row kinds, because CONTEXT is -1 and every real frame is >= 0:
-    a key is visible when it is context (`k < 0`) or not in the query's future (`k <= q`). A
-    context query has q = -1, so no video key satisfies `k <= q` and it is blind to video for
-    free.
+    `pos_t` is `image_position_ids(...)[:, 0]` — the packer's answer, not a reconstruction of it.
+    This matters more than usual here, because the alignment between the two clocks is not
+    something a caller could reasonably re-derive: audio latents advance 1.0 per row while video
+    frames sit on `_video_t_grid`'s (1,4,4,4,4)x5/3 spans, chosen so that 17 pixel frames = 5
+    latents = 28.33 rotary units ~ 28 audio latents. Reading `pos_t` gets that for free; a
+    rows-per-frame ratio computed here would be a rounding error with a plausible story.
+
+    `media_start` is where the ordered rows begin — `text_len + ref_row_count(refs)`. Everything
+    before it (text, r2v references) is context under both clocks.
+
+    Pass `video_start` for the **video-only clock**: audio joins the context, so the encoder is
+    frame-causal in video alone and audio rows come out with no video conditioning at all
+    (measured: centered cos 0.047 / -0.074, "Phase 2 mask cost"). Leave it None for the **AV
+    clock**, where audio is ordered on its own 40 Hz spans, audio at time t sees video <= t and
+    video at time t sees audio <= t. Both directions causal, so neither carries the future
+    backward and the composition property the strict mask exists for is untouched.
+    """
+    t = pos_t.to(torch.float32).clone()
+    t[:media_start] = CONTEXT
+    if video_start is not None:
+        t[media_start:video_start] = CONTEXT
+    return t
+
+
+def causal_mask(q_time, k_time, context_sees_video=False):
+    """[Q, K] bool, True = attend. Times from `FrameSpans.frame_index` or from `row_time`.
+
+    The whole rule is `k <= q`. Context is -inf, so a context KEY is visible to everyone and a
+    context QUERY admits nothing but other context — "always visible" and "blind to the ordered
+    rows" are the same inequality read from its two ends, and neither needs a branch.
 
     `context_sees_video=True` restores Phase 0's looser mask, where only video queries were
     restricted. It exists so the leak above can be measured and regression-tested, NOT as a
     supported encoder configuration — see the module docstring.
     """
-    q, k = q_frames.unsqueeze(1), k_frames.unsqueeze(0)
-    allowed = (k < 0) | (k <= q)
+    q, k = q_time.unsqueeze(1), k_time.unsqueeze(0)
+    allowed = k <= q
     if context_sees_video:
-        allowed = allowed | (q < 0)
+        allowed = allowed | (q == CONTEXT)
     return allowed
 
 

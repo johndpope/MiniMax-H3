@@ -38,35 +38,38 @@ def sample_inputs(mm, latent_t=7):
                 audio_noise=torch.randn(n_audio * mm.AUDIO_CHANNELS, 32))
 
 
-def prefix_delta(scd, h, ctx, sp, keep_frames, context_sees_video, depth):
-    """Disagreement between the first `keep_frames` frames of a masked full-clip run and a run in
-    which the later frames DO NOT EXIST. Zero is what "frame-causal" has to mean for a cache to
-    be sound; anything else is future information reaching the prefix.
+def prefix_delta(scd, h, ctx, t, keep_t, context_sees_video, depth):
+    """Disagreement between the rows at time <= `keep_t` of a masked full-clip run and a run in
+    which the later rows DO NOT EXIST. Zero is what "causal" has to mean for a cache to be sound;
+    anything else is future information reaching the prefix.
 
-    Returns (video, context) separately because that is the mechanism: the loose mask lets future
-    frames into the CONTEXT rows immediately, and they reach the video rows one block later.
+    Takes the row-time vector rather than a frame count, so the same check covers the video-only
+    clock and the AV clock — under the latter the prefix is a gather, not a row slice, and a
+    version written around `rows_for_frames` would simply not be able to express the question.
+
+    Returns (ordered, context) separately because that is the mechanism: the loose mask lets
+    future frames into the CONTEXT rows immediately, and they reach the video rows one block later.
     """
-    from scd_attention import causal_mask, run_block
+    from scd_attention import CONTEXT, causal_mask, run_block
 
-    frames = sp.frame_index()
-    keep = sp.rows_for_frames(0, keep_frames).stop
-    full_mask = causal_mask(frames, frames, context_sees_video)
-    pre_mask = causal_mask(frames[:keep], frames[:keep], context_sees_video)
+    keep = (t <= keep_t).nonzero().squeeze(1)
+    full_mask = causal_mask(t, t, context_sees_video)
+    pre_mask = causal_mask(t[keep], t[keep], context_sees_video)
     t_emb, mod_row, cos, sin = ctx
-    pre_ctx = (t_emb, mod_row[:keep], cos[:keep], sin[:keep])
+    pre_ctx = (t_emb, mod_row[keep], cos[keep], sin[keep])
 
-    x, xp = h, h[:keep]
+    x, xp = h, h[keep]
     with torch.no_grad():
         for block in list(scd.encoder_blocks)[:depth]:
             x = run_block(block, x, ctx, mask=full_mask)
             xp = run_block(block, xp, pre_ctx, mask=pre_mask)
-    d = (x[:keep] - xp).abs()
-    vs = sp.video_start
-    return d[vs:].max().item(), d[:vs].max().item()
+    d = (x[keep] - xp).abs()
+    is_context = t[keep] == CONTEXT
+    return d[~is_context].max().item(), d[is_context].max().item()
 
 
 @case
-def test_spans_agree_with_the_packed_sequence(scd, h, ctx, sp, mm):
+def test_spans_agree_with_the_packed_sequence(scd, h, ctx, sp, mm, _pack):
     """`FrameSpans` locates the video segment by subtraction; the base tags every row by modality.
     They must agree, or the mask is causal over the wrong rows and nothing downstream notices."""
     tags = ctx[1] % mm.MODALITY_NUM
@@ -78,7 +81,7 @@ def test_spans_agree_with_the_packed_sequence(scd, h, ctx, sp, mm):
 
 
 @case
-def test_mask_is_frame_causal(scd, _h, _ctx, sp, _mm):
+def test_mask_is_frame_causal(scd, _h, _ctx, sp, _mm, _pack):
     from scd_attention import causal_mask
 
     frames = sp.frame_index()
@@ -94,7 +97,7 @@ def test_mask_is_frame_causal(scd, _h, _ctx, sp, _mm):
 
 
 @case
-def test_loose_mask_lets_context_see_video(_scd, _h, _ctx, sp, _mm):
+def test_loose_mask_lets_context_see_video(_scd, _h, _ctx, sp, _mm, _pack):
     """The one behavioural difference between the two masks, isolated from its consequences."""
     from scd_attention import causal_mask
 
@@ -107,7 +110,7 @@ def test_loose_mask_lets_context_see_video(_scd, _h, _ctx, sp, _mm):
 
 
 @case
-def test_unmasked_matches_base(scd, h, ctx, _sp, _mm):
+def test_unmasked_matches_base(scd, h, ctx, _sp, _mm, _pack):
     """`attention()` with no mask and no cache is the base's own attention, bit for bit.
 
     Everything else here compares a masked run against an unmasked one, so a masked path that
@@ -124,19 +127,19 @@ def test_unmasked_matches_base(scd, h, ctx, _sp, _mm):
 
 
 @case
-def test_strict_mask_composes_across_blocks(scd, h, ctx, sp, _mm):
+def test_strict_mask_composes_across_blocks(scd, h, ctx, sp, _mm, _pack):
     """Prefix equivalence through the WHOLE encoder, not one block.
 
     float32 roundoff only — the residual stream is ~1e0, so 1e-5 is four orders below signal and
     still far under the 3.7e-3 the loose mask produces at depth 2.
     """
-    vid, ctxd = prefix_delta(scd, h, ctx, sp, 1, False, len(scd.encoder_blocks))
+    vid, ctxd = prefix_delta(scd, h, ctx, sp.frame_index(), 0, False, len(scd.encoder_blocks))
     assert max(vid, ctxd) < 1e-5, \
         f"strict mask is not prefix-exact through the stack: video {vid:.3e}, context {ctxd:.3e}"
 
 
 @case
-def test_loose_mask_leaks_across_blocks(scd, h, ctx, sp, _mm):
+def test_loose_mask_leaks_across_blocks(scd, h, ctx, sp, _mm, _pack):
     """Phase 0's mask is frame-causal for one block and NOT for a stack, and this shows the path.
 
     At depth 1 the video rows are clean — which is why Phase 0's single-block self-test passed
@@ -145,16 +148,21 @@ def test_loose_mask_leaks_across_blocks(scd, h, ctx, sp, _mm):
     both directions: if the video number at depth 2 ever comes back clean, the encoder could use
     the cheaper mask and §7 would need rewriting.
     """
-    v1, c1 = prefix_delta(scd, h, ctx, sp, 1, True, 1)
-    v2, _ = prefix_delta(scd, h, ctx, sp, 1, True, 2)
+    v1, c1 = prefix_delta(scd, h, ctx, sp.frame_index(), 0, True, 1)
+    v2, _ = prefix_delta(scd, h, ctx, sp.frame_index(), 0, True, 2)
     assert v1 < 1e-5, f"loose mask should leave VIDEO rows causal for a single block; got {v1:.3e}"
     assert c1 > 1e-3, f"context rows should already be contaminated at depth 1; got {c1:.3e}"
     assert v2 > 1e-4, f"loose mask no longer leaks into video at depth 2 (got {v2:.3e})"
 
 
 @case
-def test_chunked_matches_full(scd, _h, ctx, sp, mm):
+def test_chunked_matches_full(scd, _h, _ctx, sp, mm, pack):
     """The cache is not an approximation: chunked encoding is one masked pass, reassociated.
+
+    Run on BOTH clocks. Under the AV clock a chunk is a gather over two non-adjacent slabs of the
+    sequence and the cache fills in time order rather than row order, so this is the case that
+    fails if `encode_chunked` reverts to slicing — the video-only clock cannot tell the two apart
+    because there the packed order already IS the causal order.
 
     Compared against `encode(mask=...)` on the same inputs rather than against a stored number,
     so this stays honest if the split or the tiny config changes.
@@ -162,21 +170,79 @@ def test_chunked_matches_full(scd, _h, ctx, sp, mm):
     from scd_attention import causal_mask
 
     inputs = sample_inputs(mm, sp.latent_t)
-    frames = sp.frame_index()
-    with torch.no_grad():
-        full, _ = scd.encode(mask=causal_mask(frames, frames), **inputs)
-        for chunk in (1, 2, 3, sp.latent_t):
-            got, _, cache = scd.encode_chunked(chunk, **inputs)
-            d = (got - full).abs().max().item()
-            assert got.shape == full.shape, f"chunk {chunk}: {got.shape} vs {full.shape}"
-            assert d < 1e-5, f"chunk {chunk}: differs from a single masked pass by {d:.3e}"
-            assert len(cache) == sp.seq_len, \
-                f"chunk {chunk}: cache holds {len(cache)} rows, sequence has {sp.seq_len}"
-    _ = ctx
+    for audio_is_context in (True, False):
+        t = scd.clock(pack, sp.video_start, audio_is_context)
+        with torch.no_grad():
+            full, _ = scd.encode(mask=causal_mask(t, t), **inputs)
+            for chunk in (1, 2, 3, sp.latent_t):
+                got, _, cache = scd.encode_chunked(chunk, audio_is_context, **inputs)
+                d = (got - full).abs().max().item()
+                assert got.shape == full.shape, f"chunk {chunk}: {got.shape} vs {full.shape}"
+                assert d < 1e-5, (f"audio_is_context={audio_is_context}, chunk {chunk}: differs "
+                                  f"from a single masked pass by {d:.3e}")
+                assert len(cache) == sp.seq_len, \
+                    f"chunk {chunk}: cache holds {len(cache)} rows, sequence has {sp.seq_len}"
 
 
 @case
-def test_cache_holds_post_rope_keys(scd, _h, ctx, sp, mm):
+def test_clocks_agree_on_video_only(scd, _h, _ctx, sp, _mm, pack):
+    """`FrameSpans.frame_index` and `row_time(..., video_start)` are two routes to one mask.
+
+    The first is shape-derived and needs no packer positions; the second reads the packer's real
+    rotary axis. They must produce the same mask or one of them is wrong about where the video
+    segment starts, and the AV clock — which only the second can express — inherits that error.
+    """
+    from scd_attention import causal_mask
+
+    a = sp.frame_index()
+    b = scd.clock(pack, sp.video_start, audio_is_context=True)
+    assert torch.equal(causal_mask(a, a), causal_mask(b, b)), \
+        "the shape-derived clock and the packer's clock disagree on the video-only mask"
+
+
+@case
+def test_av_clock_orders_audio(scd, _h, ctx, sp, mm, pack):
+    """Under the AV clock audio is ORDERED, not exempt: causal in both directions, and no longer
+    video-blind. Video-blindness is the whole reason this clock exists — the encoder's audio rows
+    measured centered cos 0.047 against a bidirectional pass when audio was context."""
+    from scd_attention import CONTEXT, causal_mask
+
+    t = scd.clock(pack, sp.video_start, audio_is_context=False)
+    audio = slice(int((t == CONTEXT).sum()), sp.video_start)
+    assert audio.stop > audio.start, "no audio rows in this fixture — the case proves nothing"
+    assert (t[audio] > CONTEXT).all(), "audio is still context under the AV clock"
+
+    m = causal_mask(t, t)
+    last = sp.rows_for_frames(sp.latent_t - 1, sp.latent_t).start
+    early = audio.start
+    assert m[last, early], "the last video frame cannot see the earliest audio row"
+    assert not m[early, last], \
+        "the earliest audio row sees the last video frame — the future flows backward"
+    assert m[early, early], "an audio row cannot see itself"
+    assert m[early, :audio.start].all(), "audio lost sight of the text/reference rows"
+    _ = ctx, mm
+
+
+@case
+def test_av_clock_composes_across_blocks(scd, h, ctx, sp, _mm, pack):
+    """Ordering audio does not reopen the leak the strict mask was written to close.
+
+    Both modalities causal on one shared axis still means nothing carries the future backward, so
+    the prefix-in-time stays a function of the prefix-in-time through the whole encoder — the
+    property a KV cache needs. Worth asserting rather than arguing: the tempting cheap variant,
+    letting audio queries see all video while video stays causal, satisfies every intuition about
+    "audio is bidirectional anyway" and is the loose mask under another name.
+    """
+    t = scd.clock(pack, sp.video_start, audio_is_context=False)
+    keep_t = t[sp.rows_for_frames(0, 1).start]
+    ordered, context = prefix_delta(scd, h, ctx, t, keep_t, False, len(scd.encoder_blocks))
+    assert max(ordered, context) < 1e-5, \
+        f"AV clock is not prefix-exact through the stack: ordered {ordered:.3e}, " \
+        f"context {context:.3e}"
+
+
+@case
+def test_cache_holds_post_rope_keys(scd, _h, ctx, sp, mm, _pack):
     """Cached K must already carry its rows' RoPE.
 
     A cache written before rotation would need every entry re-rotated on each read, and the
@@ -200,7 +266,7 @@ def test_cache_holds_post_rope_keys(scd, _h, ctx, sp, mm):
 
 
 @case
-def test_cache_bytes_scale_with_rows(scd, _h, _ctx, sp, mm):
+def test_cache_bytes_scale_with_rows(scd, _h, _ctx, sp, mm, _pack):
     """Cache size is linear in rows and blocks — the arithmetic §8.1's 0.95 GB/frame rests on."""
     from scd_attention import KVCache
 
@@ -214,7 +280,7 @@ def test_cache_bytes_scale_with_rows(scd, _h, _ctx, sp, mm):
 
 
 @case
-def test_encode_unmasked_is_untouched(scd, _h, _ctx, _sp, mm):
+def test_encode_unmasked_is_untouched(scd, _h, _ctx, _sp, mm, _pack):
     """`encode()` with no mask and no cache must still be the plain base prefix — Phase 1's
     prefix-parity guarantee is what the whole split rests on, and Phase 2 must not erode it."""
     inputs = sample_inputs(mm, 2)
@@ -253,10 +319,10 @@ def main():
         scd = MiniMaxH3SCD(copy.deepcopy(stock), encoder_depth=ENCODER_DEPTH,
                            decoder_source=DECODER_SOURCE)
         with torch.no_grad():
-            h, ctx = scd.preamble(**inputs)
+            h, ctx, pack = scd.preamble(**inputs)
         sp = scd.spans(inputs["video_latent"], h.shape[0])
         try:
-            fn(scd, h, ctx, sp, mm)
+            fn(scd, h, ctx, sp, mm, pack)
             print(f"ok    {fn.__name__}")
         except Exception as e:
             # Not just AssertionError: a broken cache raises a shape mismatch, and letting that
