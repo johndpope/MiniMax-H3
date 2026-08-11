@@ -172,6 +172,10 @@ def main():
     ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
     ap.add_argument("--out", help="write per-clip scores here as JSON")
+    ap.add_argument("--save-latents", metavar="DIR",
+                    help="also write each clip's sampled latent and its ground truth here, for "
+                         "phase3_decode.py. Separate steps because the 2.4 B VAE decoder does not "
+                         "fit alongside the resident base")
     args = ap.parse_args()
 
     mm, load_dit, _ = import_fizgig(args.fizgig_src)
@@ -205,6 +209,17 @@ def main():
                       duplicate_pos=not args.own_context_pos)
         s = score(pred, clip["video_latent"].float())
         results.append({"clip": name, **s})
+        if args.save_latents:
+            from safetensors.torch import save_file
+            os.makedirs(args.save_latents, exist_ok=True)
+            path = os.path.join(args.save_latents, f"{name}_{args.mode}.safetensors")
+            # The truth travels with the sample so the decode is a comparison rather than a
+            # picture: the VAE's own round-trip loss is not small, and a blurry sample is not
+            # evidence against the split unless the truth through the same path is sharp.
+            save_file({"pred": pred.float().cpu().contiguous(),
+                       "truth": clip["video_latent"].float().cpu().contiguous()}, path,
+                      metadata={"clip": name, "mode": args.mode, "lora": args.lora or "none",
+                                "steps": str(args.steps), "corr_ctx": str(s["corr_ctx"])})
         print(f"{name:>16}  mse {s['mse']:.4f} (noise {s['mse_noise']:.4f})  "
               f"corr {s['corr']:+.4f}  corr[1:] {s['corr_ctx']:+.4f}  "
               f"std {s['per_frame'][-1]['std']:.3f}", flush=True)
