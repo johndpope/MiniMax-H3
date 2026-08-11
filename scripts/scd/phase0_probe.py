@@ -173,8 +173,21 @@ def synthetic_inputs(latent_t, lat_h, lat_w, text_len, device, dtype):
 # --- sweep -------------------------------------------------------------------------------
 
 @torch.no_grad()
-def build_stream(mm, model, video_latent, text_embeds, sigma, device, dtype):
-    """Packed [text | audio | video] embeddings plus everything a block needs."""
+def build_stream(mm, model, video_latent, text_embeds, sigma, device, dtype, audio_corr=0.0):
+    """Packed [text | audio | video] embeddings plus everything a block needs.
+
+    `audio_corr` is an AR(1) coefficient applied along the audio time axis. It exists because the
+    audio rows here carry NO signal — unlike video, which is `(1-sigma)*latent + sigma*eps`, audio
+    is `sigma_a * eps` with no latent term, in every run, clip-sourced or not. Real 40 Hz audio
+    latents are strongly autocorrelated and IID noise is the far end of that axis, so any window
+    cost measured on it is an upper bound of unknown tightness. Sweeping the coefficient says how
+    much of the measurement is content-dependent without needing the audio VAE.
+
+    The recurrence is `a[f] = c*a[f-1] + sqrt(1-c^2)*eps[f]`, whose stationary marginal is exactly
+    N(0,1) — so sigma_a still scales a correctly-distributed sample and only the correlation moves.
+    The plain `c*prev + (1-c)*eps` form used for video shrinks the variance instead, which would
+    put the rows off-distribution and confound the very comparison this is for.
+    """
     _, _, latent_t, lat_h, lat_w = video_latent.shape
     text_len = text_embeds.shape[1]
 
@@ -197,6 +210,14 @@ def build_stream(mm, model, video_latent, text_embeds, sigma, device, dtype):
         t_audio = 1.0 - sigma_a
         a_eps = torch.randn(n_audio_latents * mm.AUDIO_CHANNELS, model.config.audio_latents_dim,
                             device=device, generator=torch.Generator(device).manual_seed(1))
+        if audio_corr:
+            # Rows are channel-major -- image_position_ids builds the time index with
+            # `arange(n).repeat(AUDIO_CHANNELS)` -- so time is the second axis after this view.
+            a = a_eps.view(mm.AUDIO_CHANNELS, n_audio_latents, -1).clone()
+            keep = (1.0 - audio_corr ** 2) ** 0.5
+            for f in range(1, n_audio_latents):
+                a[:, f] = audio_corr * a[:, f - 1] + keep * a[:, f]
+            a_eps = a.view_as(a_eps)
         a_rows = (sigma_a * a_eps).to(model.audio_patch_proj.weight.dtype)
         audio_embed = model.audio_patch_proj(a_rows).to(dtype)
 

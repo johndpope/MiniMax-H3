@@ -21,6 +21,14 @@ The synthetic run's *content* is not real, and a window's cost plausibly depends
 frame-to-frame novelty there is, so it is reported beside the clip rather than instead of it. The
 encoded clips top out at 8 latent frames and the packer's grid admits only 7 or 12.
 
+That split applies to VIDEO only. There is no real audio anywhere in this tree: `build_stream`
+gives video `(1-sigma)*latent + sigma*eps` but gives audio `sigma_a * eps` with no latent term, so
+the audio rows are pure noise in the clip run exactly as much as in the synthetic one. Encoding a
+longer or higher-resolution clip does not change that; only the audio VAE would, and it is not
+downloaded. So `ccos_audio` is not "the window's cost on real audio" — it is its cost on IID noise,
+which is the least autocorrelated input the audio axis can be handed and therefore an upper bound.
+`--audio-corr` sweeps the correlation to find out whether that bound is tight or vacuous.
+
 Scored per rule 10: centered cosine with the common mode beside it, against the SAME chunked path
 at `window=None`, so the window's cost is isolated from the mask's (that is `phase2_mask_cost.py`).
 
@@ -126,6 +134,10 @@ def main():
                     help="0 to skip the synthetic long run")
     ap.add_argument("--synthetic-lat-hw", type=int, nargs=2, default=[32, 32], metavar=("H", "W"),
                     help="latent H W for the synthetic source; 48 84 is 768p (1008 rows/frame)")
+    ap.add_argument("--audio-corr", type=float, default=0.0,
+                    help="AR(1) coefficient on the audio noise time axis. Every run so far is 0.0 "
+                         "(IID), which is the least autocorrelated audio possible and so the "
+                         "loosest upper bound on what a window costs it. Sweep to see if it binds")
     ap.add_argument("--keep-audio", action="store_true",
                     help="window video only; audio rows are never evicted. ~1.3%% of rows at 768p")
     ap.add_argument("--layer-major", action="store_true",
@@ -167,7 +179,8 @@ def main():
     for name, (video_latent, te) in sources.items():
         per_sigma = {}
         for sigma in args.sigmas:
-            stream = build_stream(mm, model, video_latent, te, sigma, device, dtype)
+            stream = build_stream(mm, model, video_latent, te, sigma, device, dtype,
+                                  audio_corr=args.audio_corr)
             n_audio = stream["video_start"] - stream["audio_start"]
             print(f"{name} sigma={sigma:.4f}  S={stream['seq_len']}  "
                   f"frames={stream['latent_t']}x{stream['frame_rows']}  audio={n_audio}",
@@ -218,7 +231,7 @@ def main():
         "clip": args.clip, "sigmas": args.sigmas, "windows": args.windows,
         "chunk_frames": args.chunk_frames, "encoder_depth": args.encoder_depth,
         "layer_major": args.layer_major, "synthetic_lat_hw": args.synthetic_lat_hw,
-        "keep_audio": args.keep_audio,
+        "keep_audio": args.keep_audio, "audio_corr": args.audio_corr,
         "base_quant": args.base_quant, "n_blocks": len(model.blocks),
         "checkpoint": os.path.basename(args.checkpoint.rstrip("/")),
         "elapsed_s": time.time() - t0, "git_sha": sha, "by_source": results,
