@@ -772,5 +772,26 @@
   "expected": 0.999,
   "tol": 0.002,
   "index": 0
+ },
+ {
+  "id": "p25t1dt-t12-n30-speedup",
+  "file": "docs/phase25_tier1_dectext.json",
+  "key": "t12_n30_speedup",
+  "expected": 3.9,
+  "tol": 0.39
+ },
+ {
+  "id": "p25t1dt-t12-n30-speedup-text",
+  "file": "docs/phase25_tier1_dectext.json",
+  "key": "t12_n30_speedup_text",
+  "expected": 3.18,
+  "tol": 0.32
+ },
+ {
+  "id": "p25t1dt-t12-n8-speedup-text",
+  "file": "docs/phase25_tier1_dectext.json",
+  "key": "t12_n8_speedup_text",
+  "expected": 2.52,
+  "tol": 0.25
  }
 ]

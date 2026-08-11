@@ -143,18 +143,26 @@ def time_encoder(blocks, stream, device, window, chunk_frames):
 
 
 @torch.no_grad()
-def time_decoder_frame(blocks, stream, device):
+def time_decoder_frame(blocks, stream, device, with_text=False):
     """One frame through the decoder re-composition, token_concat style: 2R rows.
 
     The conditioning half is the encoder's rows for this frame and the other half is the noisy
     latent for it, so the row count is 2R and the RoPE positions repeat — which is what
     token_concat means and is why Tier 0 modelled `attn(2R, 2R)`. The CONTENT is meaningless
     (nothing is trained), and content does not change the shapes this times.
+
+    `with_text` adds the text rows, because §6.2's decoder pseudocode packs them (`noisy video
+    frame tokens (+ text; ...)`) and 2R does not. This term multiplies `n_steps * frames`, so if
+    the two disagree the headline speedup is quoted on the wrong decoder — measure rather than
+    assume. Text is 512 rows against 2R = 2016 at 768p, a 25% longer sequence and ~56% more
+    attention, which is the scale of error worth knowing about before Phase 3 builds on it.
     """
     r = stream["frame_rows"]
     lo = stream["video_start"]
     rows = torch.arange(lo, lo + r, device=device)
     rows = torch.cat([rows, rows])
+    if with_text:
+        rows = torch.cat([torch.arange(stream["audio_start"], device=device), rows])
     x = stream["h"][rows]
     ctx = (stream["t_emb"], stream["mod_row"][rows], stream["cos"][rows], stream["sin"][rows])
 
@@ -243,6 +251,12 @@ def main():
             ms, gb = time_decoder_frame(dec_blocks, stream, device)
             row.update(decoder_frame_ms=ms, decoder_peak_gb=gb)
             print(f"  decoder : {ms:7.3f} ms/frame  peak {gb:5.1f} GB", flush=True)
+            # Both, in one run: the speedup is quoted off the 2R decoder, and whether that is the
+            # decoder Phase 3 will actually build decides whether the headline is honest.
+            ms_t, gb_t = time_decoder_frame(dec_blocks, stream, device, with_text=True)
+            row.update(decoder_frame_text_ms=ms_t, decoder_peak_text_gb=gb_t)
+            print(f"  +text   : {ms_t:7.3f} ms/frame  peak {gb_t:5.1f} GB  "
+                  f"({ms_t / ms:.2f}x the 2R decoder)", flush=True)
         except OOM:
             row["decoder_frame_ms"] = None
             print("  decoder : OOM", flush=True)
@@ -252,9 +266,12 @@ def main():
             for n in args.steps:
                 stock = n * row["stock_step_ms"] / 1e3
                 scd = (row["encoder_ms"] + n * latent_t * row["decoder_frame_ms"]) / 1e3
-                row["steps"][str(n)] = {"stock_s": stock, "scd_s": scd, "speedup": stock / scd}
+                scd_t = (row["encoder_ms"]
+                         + n * latent_t * row["decoder_frame_text_ms"]) / 1e3
+                row["steps"][str(n)] = {"stock_s": stock, "scd_s": scd, "speedup": stock / scd,
+                                        "scd_text_s": scd_t, "speedup_text": stock / scd_t}
                 print(f"    N={n:<3d} stock {stock:8.1f} s   scd {scd:7.1f} s   "
-                      f"{stock / scd:5.2f}x", flush=True)
+                      f"{stock / scd:5.2f}x   (+text {stock / scd_t:5.2f}x)", flush=True)
         rows.append(row)
         del stream, z
         torch.cuda.empty_cache()
@@ -271,6 +288,7 @@ def main():
     for r in rows:
         for n, v in r["steps"].items():
             payload[f"t{r['latent_t']}_n{n}_speedup"] = v["speedup"]
+            payload[f"t{r['latent_t']}_n{n}_speedup_text"] = v["speedup_text"]
         if r.get("cache_rows"):
             payload[f"t{r['latent_t']}_cache_rows"] = r["cache_rows"]
     with open(args.out, "w") as f:

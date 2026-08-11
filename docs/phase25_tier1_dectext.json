@@ -1,0 +1,77 @@
+{
+ "device": "NVIDIA RTX PRO 4000 Blackwell",
+ "total_gb": 25.149898752,
+ "torch": "2.13.0+cu130",
+ "rows_per_frame": 1008,
+ "encoder_depth": 30,
+ "decoder_source": [
+  0,
+  1,
+  45,
+  46,
+  47,
+  48,
+  49
+ ],
+ "window": 8,
+ "chunk_frames": 1,
+ "sigma": 0.5714285714285715,
+ "base_quant": "nf4",
+ "steps": [
+  8,
+  16,
+  30
+ ],
+ "checkpoint": "transformer",
+ "elapsed_s": 124.53099942207336,
+ "git_sha": "e4f8d42",
+ "by_length": [
+  {
+   "latent_t": 12,
+   "seconds": 1.875,
+   "seq_len": 12758,
+   "n_audio": 150,
+   "frame_rows": 1008,
+   "steps": {
+    "8": {
+     "stock_s": 90.2261328125,
+     "scd_s": 30.513896484375,
+     "speedup": 2.9568866388041055,
+     "scd_text_s": 35.76065625,
+     "speedup_text": 2.5230558461157995
+    },
+    "16": {
+     "stock_s": 180.452265625,
+     "scd_s": 50.9624560546875,
+     "speedup": 3.5408863621360354,
+     "scd_text_s": 61.4559755859375,
+     "speedup_text": 2.9362851033527733
+    },
+    "30": {
+     "stock_s": 338.347998046875,
+     "scd_s": 86.74743530273437,
+     "speedup": 3.9003804189264586,
+     "scd_text_s": 106.42278442382812,
+     "speedup_text": 3.179281578457918
+    }
+   },
+   "stock_step_ms": 11278.2666015625,
+   "stock_peak_gb": 19.392417792,
+   "encoder_ms": 10065.3369140625,
+   "encoder_peak_gb": 11.97333504,
+   "cache_rows": 8682,
+   "cache_bytes": 248930304,
+   "decoder_frame_ms": 213.00582885742188,
+   "decoder_peak_gb": 3.695474176,
+   "decoder_frame_text_ms": 267.6595764160156,
+   "decoder_peak_text_gb": 3.70659072
+  }
+ ],
+ "t12_n8_speedup": 2.9568866388041055,
+ "t12_n8_speedup_text": 2.5230558461157995,
+ "t12_n16_speedup": 3.5408863621360354,
+ "t12_n16_speedup_text": 2.9362851033527733,
+ "t12_n30_speedup": 3.9003804189264586,
+ "t12_n30_speedup_text": 3.179281578457918,
+ "t12_cache_rows": 8682
+}
