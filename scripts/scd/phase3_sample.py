@@ -73,8 +73,20 @@ def load_lora(scd, path):
 
 @torch.no_grad()
 def sample(scd, mm, clip, sigmas, mode, *, seed, window, chunk_frames, media_start_on,
-           duplicate_pos):
+           duplicate_pos, seed_frames=0):
     """Denoise the clip one frame at a time. Returns the sampled latent, same shape as the truth.
+
+    `seed_frames` takes the first N frames from the truth instead of generating them, and is the
+    difference between measuring the rollout and measuring recall. Frame 0's context half is zeros
+    by construction and `media_start_on` defaults off, so with N=0 frame 0 is generated from
+    NOTHING — no context, no text — and the only way it can score is by having memorised the
+    training clips. Every later frame then conditions on whatever it invented. N=1 is what FL2VA
+    and I2VA actually do, and it is the honest autoregressive test for a model conditioned this
+    way: frames 1.. are still generated, still fed back, still compounding.
+
+    N>0 deliberately puts ground truth into an `ar` rollout, which is exactly what
+    `test_ar_never_reads_the_ground_truth` forbids at the default N=0. Keep it 0 to compare
+    against runs that predate this.
 
     The encoder is re-run once per FRAME, not once per denoising step: it reads only clean latents,
     and under both modes those stop changing as soon as frame f-1 is final. Inside a frame the
@@ -99,6 +111,12 @@ def sample(scd, mm, clip, sigmas, mode, *, seed, window, chunk_frames, media_sta
     out = torch.zeros_like(x0)
 
     for f in range(latent_t):
+        if f < seed_frames:
+            # Into `ctx_buf` as well as `out`: under `ar` the buffer starts at zeros, and a seeded
+            # frame that is not written back would condition frame f+1 on nothing at all.
+            out[:, :, f] = x0[:, :, f]
+            ctx_buf[:, :, f] = x0[:, :, f]
+            continue
         enc, clean_ctx, _ = scd.encode_chunked(
             chunk_frames, window=window, layer_major=True, keep_audio=True,
             video_latent=ctx_buf, t=torch.tensor([1.0], device=dev), text_embeds=text)
@@ -172,6 +190,10 @@ def main():
     ap.add_argument("--base-quant", default="nf4", choices=["nf4", "none"])
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
     ap.add_argument("--out", help="write per-clip scores here as JSON")
+    ap.add_argument("--seed-frames", type=int, default=0,
+                    help="take the first N frames from the truth instead of generating them. "
+                         "N=1 is what FL2VA/I2VA do and makes `ar` measure the rollout rather "
+                         "than whether frame 0 was memorised; N=0 reproduces the earlier runs")
     ap.add_argument("--save-latents", metavar="DIR",
                     help="also write each clip's sampled latent and its ground truth here, for "
                          "phase3_decode.py. Separate steps because the 2.4 B VAE decoder does not "
@@ -206,7 +228,7 @@ def main():
         clip = clips.load(name, device=device, dtype=torch.bfloat16)
         pred = sample(scd, mm, clip, sigmas, args.mode, seed=args.seed, window=args.window,
                       chunk_frames=args.chunk_frames, media_start_on=args.decoder_text,
-                      duplicate_pos=not args.own_context_pos)
+                      duplicate_pos=not args.own_context_pos, seed_frames=args.seed_frames)
         s = score(pred, clip["video_latent"].float())
         results.append({"clip": name, **s})
         if args.save_latents:
@@ -232,6 +254,7 @@ def main():
     if args.out:
         with open(args.out, "w") as fh:
             json.dump({"mode": args.mode, "lora": args.lora, "steps": args.steps,
+                       "seed_frames": args.seed_frames,
                        "clips": results}, fh, indent=2)
         print(f"wrote       : {args.out}")
 

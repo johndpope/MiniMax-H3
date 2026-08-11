@@ -178,6 +178,41 @@ def test_frame_0_is_excluded_from_corr_ctx(_mm, _scd, clip):
     assert s["corr"] < 0.95, f"corr {s['corr']} did not move with frame 0; the two are the same"
 
 
+@case
+def test_seeding_frame_0_does_not_leak_the_later_frames(mm, scd, clip):
+    """`seed_frames=1` hands the rollout frame 0 and NOTHING else.
+
+    The seeded frame has to reach `ctx_buf`, not just the output, or frame 1 conditions on zeros —
+    and the moment ground truth is written into an `ar` buffer, the obvious way to get it wrong is
+    to write all of it and quietly recreate `oracle`. So: frame 0 must be the truth exactly, and
+    perturbing frames 1.. of the truth must not move the sample at all.
+    """
+    from phase3_sample import sample
+
+    kw = dict(seed=5, window=None, chunk_frames=1, media_start_on=False, duplicate_pos=True)
+    sigmas = [0.9, 0.5, 0.0]
+    x0 = clip["video_latent"].float()
+
+    got = sample(scd, mm, clip, sigmas, "ar", seed_frames=1, **kw)
+    assert torch.equal(got[:, :, 0], x0[:, :, 0].to(got.dtype)), \
+        "frame 0 is not the truth, so the seed was not applied"
+    assert not torch.equal(got[:, :, 1], x0[:, :, 1].to(got.dtype)), \
+        "frame 1 came back as the truth too — the seed is copying more than it was asked for"
+
+    torch.manual_seed(13)
+    moved = x0.clone()
+    moved[:, :, 1:] = torch.randn_like(moved[:, :, 1:])       # ruin every UNSEEDED frame
+    other = sample(scd, mm, dict(clip, video_latent=moved), sigmas, "ar", seed_frames=1, **kw)
+    assert torch.equal(got, other), \
+        f"the sample moved by {(got - other).abs().max():.3e} when only the UNSEEDED truth " \
+        "changed — seeding has turned the ar rollout into an oracle"
+
+    # And the default is still the strict rollout the rest of the suite pins.
+    plain = sample(scd, mm, clip, sigmas, "ar", **kw)
+    assert not torch.equal(plain[:, :, 0], x0[:, :, 0].to(plain.dtype)), \
+        "seed_frames defaults to something other than 0; earlier runs are not comparable"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
