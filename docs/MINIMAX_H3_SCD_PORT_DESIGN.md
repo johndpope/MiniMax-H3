@@ -502,6 +502,8 @@ Two things were left open above and are now done, because Tier 1 cannot start wi
 
 Not a default. At test sizes the block mask is a compile for no benefit, and making the choice a size threshold means nobody can tell from a call site which attention ran.
 
+> **Superseded for the chunked path.** This subsection reads as though `block=True` is the configuration to run. It is not: see *The block mask is the wrong tool for the chunked path*, below. The block mask remains correct for a **single full-sequence pass**, which is the case that motivated it.
+
 **The window policy is implemented** — `encode_chunked(..., window=W)` keeps the last `W` latent frames and evicts the rest, and this closes the *larger* of the two problems. The dense mask was 3.8 GB; **the encoder KV cache at the same size is 53 GB**, because 30 encoder blocks hold 840 KiB per row:
 
 | | 768p/5s (S≈21k) | 768p/10s (S≈41k) | 768p/15s (S≈62k) |
@@ -582,6 +584,53 @@ That makes the window a dial rather than a wall, with two levers and a preferenc
 
 **One row of the file is a control, not a measurement, and the checker now says so.** window=6 at latent_t=7 scores exactly 1.0000 / 0.0000 on both modalities. That is not "a 6-frame window is free": eviction fires *after* a chunk, so with `chunk_frames=1` the last boundary is frame 7, and a 6-frame window is first consulted after the final chunk has already run. It is a useful control — `cache.keep` runs, drops rows, and provably changes nothing when it drops them too late to matter — but it reads exactly like a headline result. `check_findings.py` now computes the last chunk boundary that still has a chunk behind it and WARNs on any window at or past it, so the next window sweep cannot quote this shape by accident.
 
+#### The 53 GB was a property of the loop order, not of the encoder (2026-08-11)
+
+`encode_chunks` ran chunks outer, blocks inner — the obvious order, and the one streaming AR is forced into. It also forces **all 30 block caches to be live at once**, which is where 840 KiB per row and the 53 GB at 768p/15s come from. Transposing the loops (`layer_major=True`) removes that:
+
+| | chunk-outer (streaming) | **block-outer (offline)** |
+|---|---|---|
+| live KV cache | 30 blocks — 840 KiB/row | **1 block — 28 KiB/row** |
+| unbounded cache @ 768p/15s | 53 GB | **1.8 GB** |
+| weight transfers under block swap | 30 × n_chunks (2760 at 92 chunks) | **30** |
+| needs the whole clip up front | no | **yes** |
+
+The two are the **same arithmetic**, not an approximation traded for memory. Block *i*'s cache accumulates K/V from the same chunks in the same order either way, because chunk *c*'s input to block *i* is block *i*−1's output on chunk *c* and nothing else — so once block *i*−1 has run every chunk, block *i* can too, and its cache dies the moment it finishes. `test_layer_major_matches_chunk_major` asserts `torch.equal` across both clocks and with the window on and off; three mutants (one cache shared across blocks, eviction skipped, the previous block's output not carried forward) each fail it and nothing else.
+
+**This corrects the framing of the section above, which was written a few hours earlier.** "The KV cache is the real blocker at 53 GB" is true of *streaming* AR and false of the offline encode-once pass, and the difference is a loop transposition rather than anything about SCD. Two consequences matter more than the number:
+
+- **For Phase 2.5 and Phase 3 the window is now a quality dial, not a memory constraint.** A 12-frame window in the layer-major encoder is ~0.35 GB, not ~10 GB, so the width can be chosen off the audio curve in the section above rather than off what fits.
+- **For Phase 5 it is still mandatory and still binding.** The AR driver cannot run block-outer — chunk *c*+1 does not exist when chunk *c* runs — so it pays the full 840 KiB/row and §8.1 applies to it unchanged. The two paths now differ in memory profile by 30×, which is a thing to design around rather than to discover during Phase 5.
+
+The block-swap row is the one that would have quietly ruined Tier 1. On a 24 GB card the encoder must page blocks, and a chunk-outer encoder at 92 chunks moves the weights 92 times over — enough to make the encoder a PCIe benchmark and report SCD as slow for a reason that has nothing to do with SCD.
+
+#### The block mask is the wrong tool for the chunked path (2026-08-11)
+
+Tier 1 OOM'd on its first real run, at `latent_t=12`, with 19.5 GB peak and `block=True`. The cause is not the mask's size:
+
+```
+torch._dynamo hit config.recompile_limit (8)
+   function: 'flex_attention'
+   last reason: 1/7: tensor 'key' size mismatch at index 2. expected 8650, actual 9672
+UserWarning: flex_attention called without torch.compile() — this will use an unfused
+implementation that materializes the full scores matrix instead of generating a fused kernel.
+OOM on device 0 while trying to allocate 2449473536 bytes
+```
+
+Every chunk presents a different KV length, so every chunk is a new shape and a new compile. Dynamo's `recompile_limit` is 8; at chunk 9 it stops compiling and falls back to **eager** `flex_attention`, which materializes the dense `[H, Q, K]` scores matrix — 2.4 GB per block at 768p. The block mask degrades, with a warning and no error, into exactly the dense materialization it was adopted to avoid.
+
+The deeper point is that **chunking already did the block mask's job.** `block_mask` was adopted in *Both scale blockers closed* because a full-sequence dense `[S, S]` is 3.8 GB at 768p/15s. But in the chunked encoder `Q` is one frame, not `S`: a chunk's dense mask is `1008 × K`, ~13 MB. The 3.8 GB problem only exists on the single full-sequence pass, which is the one path `block=True` is still right for. Measured, same clip lengths:
+
+| | `block=True` | **`block=False`** |
+|---|---|---|
+| `latent_t=12` (S=12758) | OOM, 19.50 GB | **9.4 s, 12.06 GB** |
+| `latent_t=22` (S=22972) | OOM, 19.29 GB | **20.5 s, 12.57 GB** |
+| `latent_t=32` (S=33184) | — | **32.3 s, 13.05 GB** |
+
+Peak is flat across a 2.6× span of clip length, and the windowed cache holds at ~12.8k rows — both of which the block-mask path was too unstable to show. Tier 1 therefore runs `block=False`; `test_block_mask_matches_dense` still pins the two masks together so the block path stays usable for the full pass. Making `block=True` viable in the chunked path needs a **fixed-capacity** KV cache so every chunk is one shape — worth doing for Phase 5, where `Q` per step is small and the cache is padded to the window anyway, and not worth doing now.
+
+The failure mode generalizes past this one flag: a compiled fast path that silently falls back to an *asymptotically worse* eager path is indistinguishable from an OOM bug, and the warning that says so arrives 8 chunks after the decision that caused it.
+
 ### Phase 2.5 — **Speed POC on untrained weights** (3–5 days) ← new, and it gates all training spend
 
 Wall-clock does not care whether the output is good. Benchmark the SCD execution graph **before** spending a dollar on training. Output will be garbage; the timings are real.
@@ -600,10 +649,42 @@ Two findings worth carrying forward: (a) `create_block_mask` **must** be compile
 
 **Watch for:** any need to raise N (denoise steps) to recover quality later will eat the win proportionally. Record the step count assumption explicitly in the benchmark.
 
-**Unblocked 2026-08-11.** Both prerequisites are in: the mask is a compiled FlexAttention `BlockMask` and the KV cache takes a sliding window. Run Tier 1 at **`block=True, window=12`**, not the `window=4` written here before the window cost was measured — at 768p a 12-frame window is ~10 GB against 53 GB unbounded, and the measurement above says 4 frames is comfortable for video and ~0.6 s of audio history, which is the wrong side of the audio curve to be benchmarking as the shipping configuration. Two numbers this must report that the Tier 1 brief above does not ask for:
+**Unblocked 2026-08-11.** Both prerequisites are in: the mask is a compiled FlexAttention `BlockMask` and the KV cache takes a sliding window. Run Tier 1 at **`block=False, window=12, layer_major=True`** — `block=False`, not the `block=True` written here when the block mask landed, because the chunked path turns out not to want it (see *The block mask is the wrong tool for the chunked path*, below) — and `window=12`, not the `window=4` written here before the window cost was measured — the measurement above puts 4 frames at ~0.6 s of audio history, the wrong side of the audio curve to benchmark as the shipping configuration, and under layer-major a 12-frame window costs ~0.35 GB so there is nothing to trade against. Two numbers this must report that the Tier 1 brief above does not ask for:
 
 - **What the window costs at 768p.** Measured at probe scale (previous section): video is flat from window=2, audio is still climbing at window=6. Sweep `window` 4/8/12 against `window=None` at the longest clip where the unbounded cache still fits, quote centered cos per §7's rule, and report video and audio separately — a pooled number here would average a saturated curve with an unsaturated one.
 - **KV-cache growth as a flat line, not a slope.** Flat twice already: exactly 53 rows across three lengths on the tiny model, and 538 → 556 rows while `S` grows 2134 → 4826 on real weights. That is the claim to reproduce at 768p, since it is what makes duration unbounded and it is the first thing an off-by-one in the horizon would break.
+
+#### Phase 2.5 Tier 1 results (2026-08-11) — `docs/phase25_tier1.json`
+
+`scripts/scd/phase25_tier1.py`, real FL2VA weights at NF4, 768p (1008 rows per latent frame), σ=0.571, encoder blocks 0–29, decoder {0, 1, 45–49}, `chunk_frames=1`, `window=12`, `layer_major=True`, `block=False`. RTX PRO 4000 Blackwell, 25.1 GB, torch 2.13.0+cu130. Each of the three stages is timed with only its own blocks resident, so no row is paying for another's weights.
+
+| `latent_t` | duration | `S` | stock s/step | stock peak | encoder s (once) | enc peak | cache rows | decoder ms/frame | dec peak |
+|---|---|---|---|---|---|---|---|---|---|
+| 12 | 1.9 s | 12758 | **11.219** | 19.4 GB | 10.215 | 12.1 GB | 12758 | 212.9 | 3.7 GB |
+| 22 | 3.5 s | 22972 | **OOM** | — | 21.649 | 12.6 GB | 12778 | 215.8 | 3.8 GB |
+| 32 | 5.2 s | 33184 | **OOM** | — | 32.985 | 13.1 GB | 12796 | 214.3 | 3.9 GB |
+
+**Speedup, at the one length where both sides run: 2.93× (N=8), 3.51× (N=16), 3.87× (N=30).** The gate was "materially faster"; Tier 0 predicted 3.90× at 768p/10s on a cost model that had the split wrong in three places, and Tier 1 lands on the same order from real weights. The win grows with N for the reason Tier 0 gave — the encoder is paid once — and its ceiling is `stock_step / (latent_t × decoder_frame)` = 11.219 / (12 × 0.2129) = **4.39×**, which is what N→∞ buys and what a later step-count increase would asymptote to.
+
+**The more important result is the one that is not a ratio.** Stock H3 OOMs at `latent_t=22` on this card: at 768p it cannot denoise a clip longer than about **2 seconds** on 24 GB, because its attention is over the whole packed sequence and `S` grows 1008 rows per frame. SCD ran 5.2 s at 13.1 GB with room to spare. Past the 2-second mark the two are not fast and slow, they are running and not running — and 15 s, the length the kill criterion is written against, is out of reach for stock by a wide margin. That asymmetry is the actual product argument, and it is stronger than the 3.87×.
+
+**Three things scale the way the design says they should, and one does not.**
+
+- **KV cache is flat: 12758 → 12778 → 12796 rows while `S` grows 12758 → 33184.** A third confirmation of §8.1 and the first at 768p. The 20-row drift is not leakage — the window holds exactly `12 × 1008` video rows at every length, and the wobble is audio rows landing on their own 40 Hz grid inside those spans. An unbounded cache would grow by 1008 rows per frame, so `check_findings` now allows a spread of under one frame rather than demanding equality, which is the difference between a bounded cache and a byte-identical one.
+- **Decoder is flat per frame: 212.9 / 215.8 / 214.3 ms, 0.7% spread over a 2.6× length span.** This is the load-bearing one for M1: per-frame cost independent of how much video precedes it is exactly what makes duration linear instead of quadratic.
+- **Encoder is linear, not quadratic: 10.2 → 21.6 → 33.0 s, i.e. +11.4 and +11.3 s per 10 frames — 1.14 s/frame, twice, to two figures.** Under an unbounded cache this term would be quadratic; the window is what makes it a line, and this is the direct time-domain evidence that eviction is working rather than an assertion about row counts.
+- **Encoder peak VRAM is *not* flat: 12.1 → 12.6 → 13.1 GB.** Small, and worth naming precisely because it is easy to file under "cache growth" and panic. It is not the cache — that is pinned at 0.37 GB. It is the packed hidden state itself: `h` and `out` are `[S, 5376]` in bf16, 0.36 GB each at `S`=33184, and they must be resident because the layer-major encoder rewrites the whole sequence per block. So the encoder costs ~0.7 GB per 5 s of clip in *tensors*, independent of the cache, and at 15 s that is ~2 GB. Fine on this card, but it means "flat VRAM" is true of the KV cache and only approximately true of the encoder, and Phase 5's streaming driver should hold the sequence on CPU rather than assume the cache bound covers it.
+
+**What this run does not establish, and the control that closes it — `docs/phase25_tier1_w8.json`.** `check_findings` flags the file and the flag is correct: at `latent_t=12` the clip is shorter than the 12-frame window, so the encoder in the row that produced the speedups ran **unbounded**. Every row where the window actually evicts is a row where stock OOM'd, so no row of that file both prices a windowed encoder and has a baseline to divide by. The unbounded number is a conservative stand-in — a window that bites can only make the encoder cheaper — but "conservative" is an argument, not a measurement. Re-running at `window=8`, where the window does evict at `latent_t=12`, measures it:
+
+| | `window=12` (never evicts at t=12) | **`window=8` (evicts)** |
+|---|---|---|
+| cache rows @ t=12 | 12758 (= all of `S`) | **8682** (= 8×1008 + 512 text + 106 audio) |
+| cache bytes, one block | 0.37 GB | **0.25 GB** |
+| encoder, once | 10.215 s | **10.117 s** |
+| speedup N=8 / 16 / 30 | 2.93 / 3.51 / 3.87 | **2.96 / 3.54 / 3.89** |
+
+The windowed encoder is **not measurably slower — marginally faster**, and the speedups are unchanged to within noise, so the headline row can be quoted as the shipping shape rather than as a bound on it. Two incidental confirmations: the window is holding exactly `8 × 1008` video rows, arithmetic rather than approximately; and stock re-measured at 11.431 vs 11.219 s/step, a 1.9% spread that sets the scale for how much of any of these numbers is real — which is why the registered speedup claims carry a 10% tolerance and the cache-row claims carry none.
 
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
@@ -661,11 +742,13 @@ Two findings worth carrying forward: (a) `create_block_mask` **must** be compile
 
 With a bounded window, H3's cache is small:
 
-| Window | Encoder KV @ 768p bf16 | Temporal context |
-|--------|------------------------|------------------|
-| 4 latent frames (CastleHill default) | **3.8 GB** | ~0.67 s |
-| 8 latent frames | 7.6 GB | ~1.3 s |
-| 12 latent frames | 11.4 GB | ~2.0 s |
+| Window | KV @ 768p bf16, chunk-outer (Phase 5 AR) | block-outer (offline / training) | Temporal context |
+|--------|---|---|------------------|
+| 4 latent frames (CastleHill default) | **3.4 GB** | 0.12 GB | ~0.67 s |
+| 8 latent frames | 6.8 GB | 0.23 GB | ~1.3 s |
+| 12 latent frames | 10.2 GB | **0.35 GB** | ~2.0 s |
+
+Two columns because the same window costs 30× less when the loop runs blocks-outer, which only an offline pass can do — see "The 53 GB was a property of the loop order" under Phase 2. The left column is the one Phase 5 has to budget against. The numbers assume the shipped 30-block encoder at 1008 rows per latent frame; the original table assumed 33 layers.
 
 **H3 upside:** CastleHill chose 4 frames partly to fit LTX on 32 GB. On 80 GB, H3 can afford a 12-frame window — **3× the attention context CastleHill had**, which should mean less drift over minutes. Window size becomes a quality dial, not just a memory constraint.
 
@@ -728,7 +811,7 @@ Captions: keep triggers for style LoRAs; SCD LoRA is **architecture**, may use s
 
 New, from the code audit:
 
-8. **Encoder KV cache does not fit** at 768p — 58–87 GB naive. Not optional to solve (§8.1). **Solved 2026-08-11** by the sliding window in `encode_chunked`; at the shipped 30-block split the naive figure is 53 GB at 768p/15s and 840 KiB/row. It was also, by an order of magnitude, the bigger of the two memory blockers — risk 10 got the attention because a mask is easier to picture than a cache.
+8. **Encoder KV cache does not fit** at 768p — 58–87 GB naive. Not optional to solve (§8.1). **Solved 2026-08-11**, twice, and the second solution reclassified the first. The sliding window in `encode_chunked` bounds it; transposing the chunk loop to block-outer (`layer_major=True`) then showed the 53 GB was a property of holding 30 caches at once, and drops the unbounded figure to **1.8 GB** for any pass that has the whole clip up front. So this risk is **closed for the offline encode and open for Phase 5's AR driver**, which cannot transpose and pays the full 840 KiB/row. Splitting it that way is the point: a single "solved" would have carried the wrong memory model into Phase 5.
 9. **Short-clip benchmarks understate by ~3.6×** — Phase 3's 512² training scale measures 1.41× against 5.03× at 768p/15s. Reporting the training-scale number will read as a near-failure. Always benchmark at 768p/10–15s (§2.2.1).
 10. **Dense attention mask is impossible** at 62k². Confirmed empirically in Tier 0: an uncompiled `create_block_mask` OOMs trying to allocate **30 GB** at S=62k and **67 GB** at S=92k (int64 `[S,S]`). Compile it. FlexAttention block masks or nothing (§6.3). **Closed 2026-08-11** — `scd_attention.block_mask`, compiled, pinned to the dense path at 1e-4.
 11. **Comfy's H3 is autograd-hostile** (in-place residual accumulation) — do not try to train through it.
@@ -746,10 +829,10 @@ New, from the code audit:
 | Phase 0 causal drift | Early-layer features survive frame-causal masking; if not, price in a real retrain |
 | Phase 0 late-layer sparsity | Blocks 33–49 mostly intra-frame attention |
 | **Phase 2 mask cost** | ✅ **PASSED on the `av` clock.** Video centered cos 0.915–0.949 at the encoder cut, flat at 0.997+ through block 25 with a cliff at 30 that independently corroborates the split point. Audio 0.445/0.339 — against 0.047/−0.074 when audio was context, which is what forced the clock change and the §5 D1 amendment |
-| **Phase 2 cache scaling** | ✅ **PASSED twice.** Tiny model: a 2-frame window holds the cache at exactly 53 rows while the sequence grows 191 → 327 → 463 — equality, not a trend. Real weights: 538 → 556 rows while `S` grows 2134 → 4826. The 768p version is still Tier 1's to produce |
-| **Phase 2 window cost** | ⚠️ **SPLIT by modality.** Video is flat from a 2-frame window (0.983–1.000 centered cos); audio is still climbing at 6 (0.455–0.722), because a window in video frames is ~6× tighter for audio. Not a wall — 12 frames is ~10 GB at 768p — but the window is now a quality dial Tier 1 has to set, not a free knob |
+| **Phase 2 cache scaling** | ✅ **PASSED twice.** Tiny model: a 2-frame window holds the cache at exactly 53 rows while the sequence grows 191 → 327 → 463 — equality, not a trend. Real weights: 538 → 556 rows while `S` grows 2134 → 4826. **Now three times** — at 768p, 12758 → 12796 rows while `S` grows 12758 → 33184 |
+| **Phase 2 window cost** | ⚠️ **SPLIT by modality.** Video is flat from a 2-frame window (0.983–1.000 centered cos); audio is still climbing at 6 (0.455–0.722), because a window in video frames is ~6× tighter for audio. Not a wall — 12 frames is ~0.35 GB at 768p in the layer-major encoder, ~10 GB chunk-outer — but the window is now a quality dial Tier 1 has to set, not a free knob |
 | **Phase 2.5 Tier 0** | ✅ **PASSED** — 3.90× at 768p/10s, 5.03× at 15s (gate was ≥2×) |
-| **Phase 2.5 Tier 1** | Untrained SCD graph materially faster than stock H3 at 768p/15s; peak VRAM flat vs length |
+| **Phase 2.5 Tier 1** | ✅ **PASSED (2026-08-11)** — 2.93×/3.51×/3.87× at N=8/16/30 on real NF4 weights at 768p, `latent_t`=12, ceiling 4.39×. Decoder flat at ~214 ms/frame and cache flat at 12758→12796 rows across a 2.6× length span. The result the gate did not ask for: **stock OOMs past ~2 s at 768p on 24 GB** and SCD does not, so at 15 s there is no ratio to take. Caveat: 15 s itself is unmeasured on this card for stock, so the gate is met by extrapolation plus a hard stock ceiling, not by a 15 s A/B |
 | Phase 3 sample | Not noise; human “coherent frame” |
 | Phase 4 speed/VRAM | Phase 2.5 timing **holds at matched quality**. Measured at 768p/10–15s only — *not* on short clips (§2.2) |
 | Phase 5 length | 60s+ continuous with flat VRAM; CPU-RAM streaming decode in place |
@@ -765,11 +848,12 @@ New, from the code audit:
 |----------|--------|
 | ~~This week, $0~~ | ✅ Phase 2.5 **Tier 0** microbenchmark — **done, passed at 3.90×/5.03×** |
 | ~~Next, $0~~ | ✅ Phase 0 three-axis sweep, ✅ Phase 1 skeleton, ✅ Phase 2 mask + cache — all local, all $0 |
-| **Next, $0** | Phase 2.5 **Tier 1** — the untrained SCD graph at 768p/15s on local hardware, at `block=True, window=12`. No longer blocked: the block mask and the sliding window both landed 2026-08-11, and without them the run would have needed 3.8 GB of mask and 53 GB of cache. The window is 12 rather than 4 because the window-cost measurement put audio well short of saturation at 4 |
+| ~~Next, $0~~ | ✅ Phase 2.5 **Tier 1** — **done, passed 2026-08-11 at 2.93×/3.51×/3.87×** on real NF4 weights at 768p, and stock OOMs past ~2 s where SCD reaches 5.2 s at 13.1 GB |
+| **Next, $0** | Phase 3 — token_concat decoder + LoRA train loop. Nothing here needs renting: the encoder is 12–13 GB and the decoder 3.9 GB, both inside one 24 GB card, and Tier 1 fixed the two settings Phase 3 would otherwise have had to guess — `block=False, layer_major=True` for the offline encode, and a window of 12 frames chosen off the audio curve rather than off what fits |
 | **Now** | Keep shipping **H3 LoRAs** (still/short clip) + use **LTX SCD** for long AR if needed |
 | **Research bet** | Fund **Phases 1–4** only after Tier 0 and Phase 0 both pass |
 | **Do not** | Start Comfy UI / full AR before the hypothesis and speed tests |
-| **Do not** | Rent anything before Phase 2.5 Tier 1 |
+| **Do not** | Rent anything before Phase 3 shows a non-noise sample — Tier 1 cleared the speed gate on local hardware for $0, so the next dollar is a *quality* bet, not a speed one |
 
 ### Cloud plan
 
@@ -778,7 +862,7 @@ Phases 0–2 all run on hardware already owned. Rent only once there is a mask +
 | Phase | Where | Cost |
 |-------|-------|------|
 | 0, 1, 2, 2.5-Tier0 | **Local** (2× PRO 4000, split-GPU along the encoder/decoder cut) | **$0** |
-| 2.5-Tier1 @ 768p/15s | Local — the windowed cache is what makes it local. A 12-frame window is ~10 GB (12 × 1008 rows × 840 KiB) against 53 GB unbounded, which still fits the 24 GB card only with the base quantized; the earlier "else 1 rented hour" was pricing the unbounded run | **$0** |
+| 2.5-Tier1 @ 768p/15s | Local — the block mask and the layer-major encoder are what make it local. A 12-frame window is ~0.35 GB block-outer (12 × 1008 rows × 28 KiB) against 10 GB chunk-outer and 53 GB unbounded; the earlier "else 1 rented hour" was pricing the unbounded run | **$0** |
 | 3 — LoRA train | 1× H100 80 GB; ~3 hr/run at 512², T=4–8 | ~$2–3.5/hr → **~$15/run** |
 | 4–5 — M0/M1 at 768p/15s+ | H100 80 GB, or H200 141 GB for 2K | same |
 

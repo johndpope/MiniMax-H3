@@ -167,7 +167,7 @@ class MiniMaxH3SCD(nn.Module):
         return h, ctx
 
     def encode_chunked(self, chunk_frames, audio_is_context=False, block=False, window=None,
-                       **forward_kwargs):
+                       layer_major=False, **forward_kwargs):
         """Encode causally in chunks of `chunk_frames` video frames, carrying a KV cache. Returns
         (h, ctx, cache), with `h` back in PACKED row order.
 
@@ -198,16 +198,29 @@ class MiniMaxH3SCD(nn.Module):
         frames do not exist yet — so this is the correctness harness for the cache, not the
         inference driver. That driver is Phase 5's, and it must build positions incrementally.
 
+        `layer_major=True` runs blocks outer / chunks inner instead of the reverse. Same output,
+        bit for bit, but only one block's KV cache is ever live — 28 KiB per row against 840 —
+        and each block's weights are touched once for the whole clip rather than once per chunk.
+        It requires the whole clip up front, so it is right for this offline harness and for
+        training and wrong for Phase 5's AR driver. See `encode_chunks` for why the two agree.
+
         `block=True` builds each chunk's mask as a FlexAttention `BlockMask` instead of a dense
-        `[Q, K]`. Not a default, because at test sizes it is a compile for no benefit and at Tier 1
-        sizes the dense one does not fit — the flag makes which mask ran a property of the call
-        rather than of a size threshold nobody remembers. `test_block_mask_matches_dense` runs both.
+        `[Q, K]`, and in the CHUNKED path it is a trap — kept so the two masks can be compared,
+        not because it should be used. Chunking already solves what the block mask is for: `Q` is
+        one chunk, so a chunk's dense mask at 768p/15s is ~13 MB against the full pass's 3.8 GB.
+        What `block=True` adds is a different `(Q, K)` shape per chunk, which blows
+        `torch._dynamo`'s recompile limit after 8 chunks; the fallback is eager `flex_attention`,
+        which materializes the full `[H, Q, K]` scores matrix — 2.4 GB per block at 768p — and
+        OOMs. It degrades, with only a warning, into the thing it was chosen to avoid. Making it
+        viable needs a fixed-capacity cache so every chunk is one shape. Until then: chunked means
+        dense, and `block_mask` is for a single full-sequence pass.
+        `test_block_mask_matches_dense` still runs both, which is what keeps them interchangeable.
         """
         h, ctx, pack = self.preamble(**forward_kwargs)
         sp = self.spans(forward_kwargs["video_latent"], h.shape[0])
         t = self.clock(pack, sp.video_start, audio_is_context).to(h.device)
         out, cache = encode_chunks(self.encoder_blocks, h, ctx, t, sp, chunk_frames,
-                                   block=block, window=window)
+                                   block=block, window=window, layer_major=layer_major)
         return out, ctx, cache
 
     def decode(self, h, ctx):

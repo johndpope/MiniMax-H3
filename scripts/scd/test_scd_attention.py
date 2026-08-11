@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 import torch
@@ -361,6 +362,40 @@ def test_wide_window_is_the_unbounded_cache(scd, _h, _ctx, sp, mm, _pack):
 
 
 @case
+def test_layer_major_matches_chunk_major(scd, _h, _ctx, sp, mm, _pack):
+    """Blocks-outer and chunks-outer are the same arithmetic, and the whole memory argument for
+    layer-major rests on that being exact rather than close.
+
+    `torch.equal`, not `allclose`: the two orders issue identical ops on identical tensors, so any
+    difference at all is a scheduling bug — a cache filled in the wrong order, or a mask reused
+    across blocks after the window moved under it. Something that merely rounds differently would
+    mean "the same arithmetic reassociated" is false and the tolerance is hiding it.
+
+    Swept across both clocks and with the window on and off, because the two orders can only
+    diverge where those flags act: the AV clock makes a chunk a gather, and the window makes
+    `held` stop being a prefix. Layer-major builds its masks once on the first block and reuses
+    them, so a window whose eviction schedule does not match that mask list shows up only here.
+    """
+    inputs = sample_inputs(mm, sp.latent_t)
+    with torch.no_grad():
+        for audio_is_context in (False, True):
+            for window in (None, 2):
+                kw = dict(audio_is_context=audio_is_context, window=window, **inputs)
+                ref, _, full = scd.encode_chunked(1, **kw)
+                got, _, one = scd.encode_chunked(1, layer_major=True, **kw)
+                tag = f"clock={'video' if audio_is_context else 'av'} window={window}"
+                assert torch.equal(got, ref), \
+                    f"{tag}: layer-major differs by {(got - ref).abs().max().item():.3e}"
+                # Same rows retained, a thirtieth of the bytes — the point of the reorder. Row
+                # equality alone would pass for a cache that kept every layer and returned one.
+                n = len(scd.encoder_blocks)
+                assert len(one) == len(full), f"{tag}: {len(one)} rows vs {len(full)}"
+                assert one.bytes() * n == full.bytes(), \
+                    f"{tag}: layer-major held {one.bytes()} B, not a {n}th of {full.bytes()} B " \
+                    "— more than one block's cache is live"
+
+
+@case
 def test_encode_unmasked_is_untouched(scd, _h, _ctx, _sp, mm, _pack):
     """`encode()` with no mask and no cache must still be the plain base prefix — Phase 1's
     prefix-parity guarantee is what the whole split rests on, and Phase 2 must not erode it."""
@@ -381,7 +416,16 @@ def test_encode_unmasked_is_untouched(scd, _h, _ctx, _sp, mm, _pack):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
+    ap.add_argument("--allow-cuda", action="store_true",
+                    help="do not hide the GPU; only useful for debugging the flex path")
     args = ap.parse_args()
+
+    # Hide the GPU by default. This suite is CPU-only by design, but `block_mask` goes through
+    # torch.compile, which initialises CUDA when a device is visible and then fails with a CUDA
+    # OOM if something else is using it — so running the suite while a measurement is in flight
+    # reports `test_block_mask_matches_dense` as a failure of the block mask, which it is not.
+    if not args.allow_cuda:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     here = __file__.rsplit("/", 1)[0]
     sys.path.insert(0, here)

@@ -629,5 +629,68 @@
   "index": 0,
   "expected": 1354,
   "tol": 0
+ },
+ {
+  "id": "p25t1-t12-n8-speedup",
+  "file": "docs/phase25_tier1.json",
+  "key": "t12_n8_speedup",
+  "expected": 2.93,
+  "tol": 0.3
+ },
+ {
+  "id": "p25t1-t12-n16-speedup",
+  "file": "docs/phase25_tier1.json",
+  "key": "t12_n16_speedup",
+  "expected": 3.51,
+  "tol": 0.35
+ },
+ {
+  "id": "p25t1-t12-n30-speedup",
+  "file": "docs/phase25_tier1.json",
+  "key": "t12_n30_speedup",
+  "expected": 3.87,
+  "tol": 0.39
+ },
+ {
+  "id": "p25t1-t12-cache-rows",
+  "file": "docs/phase25_tier1.json",
+  "key": "t12_cache_rows",
+  "expected": 12758,
+  "tol": 0
+ },
+ {
+  "id": "p25t1-t22-cache-rows",
+  "file": "docs/phase25_tier1.json",
+  "key": "t22_cache_rows",
+  "expected": 12778,
+  "tol": 0
+ },
+ {
+  "id": "p25t1-t32-cache-rows",
+  "file": "docs/phase25_tier1.json",
+  "key": "t32_cache_rows",
+  "expected": 12796,
+  "tol": 0
+ },
+ {
+  "id": "p25t1w8-t12-n16-speedup",
+  "file": "docs/phase25_tier1_w8.json",
+  "key": "t12_n16_speedup",
+  "expected": 3.54,
+  "tol": 0.35
+ },
+ {
+  "id": "p25t1w8-t12-cache-rows",
+  "file": "docs/phase25_tier1_w8.json",
+  "key": "t12_cache_rows",
+  "expected": 8682,
+  "tol": 0
+ },
+ {
+  "id": "p25t1w8-t22-cache-rows",
+  "file": "docs/phase25_tier1_w8.json",
+  "key": "t22_cache_rows",
+  "expected": 8702,
+  "tol": 0
  }
 ]

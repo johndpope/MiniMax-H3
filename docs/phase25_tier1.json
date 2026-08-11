@@ -1,0 +1,98 @@
+{
+ "device": "NVIDIA RTX PRO 4000 Blackwell",
+ "total_gb": 25.149898752,
+ "torch": "2.13.0+cu130",
+ "rows_per_frame": 1008,
+ "encoder_depth": 30,
+ "decoder_source": [
+  0,
+  1,
+  45,
+  46,
+  47,
+  48,
+  49
+ ],
+ "window": 12,
+ "chunk_frames": 1,
+ "sigma": 0.5714285714285715,
+ "base_quant": "nf4",
+ "steps": [
+  8,
+  16,
+  30
+ ],
+ "checkpoint": "transformer",
+ "elapsed_s": 378.30220460891724,
+ "git_sha": "e18bdc8",
+ "by_length": [
+  {
+   "latent_t": 12,
+   "seconds": 1.875,
+   "seq_len": 12758,
+   "n_audio": 150,
+   "frame_rows": 1008,
+   "steps": {
+    "8": {
+     "stock_s": 89.752484375,
+     "scd_s": 30.65488037109375,
+     "speedup": 2.9278367192596444
+    },
+    "16": {
+     "stock_s": 179.50496875,
+     "scd_s": 51.09462890625,
+     "speedup": 3.5131866615444305
+    },
+    "30": {
+     "stock_s": 336.57181640625,
+     "scd_s": 86.86418884277344,
+     "speedup": 3.874690144352285
+    }
+   },
+   "stock_step_ms": 11219.060546875,
+   "stock_peak_gb": 19.392417792,
+   "encoder_ms": 10215.1318359375,
+   "encoder_peak_gb": 12.066930176,
+   "cache_rows": 12758,
+   "cache_bytes": 365797376,
+   "decoder_frame_ms": 212.91404724121094,
+   "decoder_peak_gb": 3.695474176
+  },
+  {
+   "latent_t": 22,
+   "seconds": 3.5416666666666665,
+   "seq_len": 22972,
+   "n_audio": 284,
+   "frame_rows": 1008,
+   "steps": {},
+   "stock_step_ms": null,
+   "encoder_ms": 21649.482421875,
+   "encoder_peak_gb": 12.578503168,
+   "cache_rows": 12778,
+   "cache_bytes": 366370816,
+   "decoder_frame_ms": 215.8387451171875,
+   "decoder_peak_gb": 3.814888448
+  },
+  {
+   "latent_t": 32,
+   "seconds": 5.208333333333333,
+   "seq_len": 33184,
+   "n_audio": 416,
+   "frame_rows": 1008,
+   "steps": {},
+   "stock_step_ms": null,
+   "encoder_ms": 32985.0859375,
+   "encoder_peak_gb": 13.056443904,
+   "cache_rows": 12796,
+   "cache_bytes": 366886912,
+   "decoder_frame_ms": 214.30880737304688,
+   "decoder_peak_gb": 3.93273088
+  }
+ ],
+ "t12_n8_speedup": 2.9278367192596444,
+ "t12_n16_speedup": 3.5131866615444305,
+ "t12_n30_speedup": 3.874690144352285,
+ "t12_cache_rows": 12758,
+ "t22_cache_rows": 12778,
+ "t32_cache_rows": 12796
+}

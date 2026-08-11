@@ -44,6 +44,8 @@ REQUIRED_MASK_COST = ["clip", "latent_t", "sigmas", "latent_hw", "encoder_depth"
                       "base_quant", "checkpoint", "git_sha", "by_sigma"]
 REQUIRED_WINDOW_COST = ["clip", "sigmas", "windows", "chunk_frames", "encoder_depth", "n_blocks",
                         "base_quant", "checkpoint", "git_sha", "by_source"]
+REQUIRED_TIER1 = ["device", "rows_per_frame", "encoder_depth", "decoder_source", "window",
+                  "chunk_frames", "base_quant", "steps", "checkpoint", "git_sha", "by_length"]
 
 
 def on_grid(latent_t):
@@ -173,9 +175,61 @@ def check_window_cost(path, p, errs, warns):
                                 f"{e['unbounded_cache_rows']} unbounded — nothing was evicted")
 
 
+def check_tier1(path, p, errs, warns):
+    """Phase 2.5 Tier 1: the untrained SCD graph timed against stock H3 at 768p.
+
+    A speedup is a ratio of two timings and a formula, and the formula is where this can go wrong
+    silently — dropping the `latent_t` factor from the decoder term turns a per-clip number into a
+    per-frame one and multiplies the answer by the frame count. So the stored speedup is recomputed
+    from the stored parts rather than trusted.
+
+    The rest is about not quoting the file as something it is not. `rows_per_frame` is what makes
+    this a 768p measurement; a run at another geometry is a fine measurement of that geometry and
+    must not be read as this one. And a window wider than the clip never evicts, exactly as in
+    `check_window_cost` — at Tier 1 that is the difference between measuring the shipped encoder
+    and measuring an unbounded one.
+    """
+    if p.get("rows_per_frame") != 1008:
+        errs.append(f"{path}: rows_per_frame {p.get('rows_per_frame')} is not 768p's 1008 — "
+                    "this file cannot be quoted as a 768p result")
+    window, seen_flat = p.get("window"), {}
+    for r in p.get("by_length", []):
+        t, tag = r["latent_t"], f"{path}: latent_t {r['latent_t']}"
+        if r.get("frame_rows") != p.get("rows_per_frame"):
+            errs.append(f"{tag}: frame_rows {r.get('frame_rows')} disagrees with the file's "
+                        f"rows_per_frame {p.get('rows_per_frame')}")
+        if window is not None and t <= window:
+            warns.append(f"{tag}: window {window} is at least the clip length — the encoder ran "
+                         "unbounded here, so this row does not price the shipped configuration")
+        elif r.get("cache_rows"):
+            seen_flat[t] = r["cache_rows"]
+        for n, v in r.get("steps", {}).items():
+            if not (r.get("stock_step_ms") and r.get("encoder_ms") and r.get("decoder_frame_ms")):
+                continue
+            want = (r["encoder_ms"] + int(n) * t * r["decoder_frame_ms"]) / 1e3
+            if abs(v["scd_s"] - want) > 1e-6 * max(1.0, want):
+                errs.append(f"{tag} N={n}: scd_s {v['scd_s']:.4f} is not encoder + "
+                            f"N*frames*decoder = {want:.4f}")
+            if abs(v["speedup"] - v["stock_s"] / v["scd_s"]) > 1e-9:
+                errs.append(f"{tag} N={n}: speedup {v['speedup']:.4f} is not stock/scd")
+    # Flat means bounded by the window, not byte-identical. The window is denominated in video
+    # frames, so the video rows it holds are exactly `window * rows_per_frame` at every length — but
+    # the audio rows sharing those frames' spans land on their own 40 Hz grid and their count inside
+    # the window shifts by a few rows with alignment. Demanding equality would fail on that jitter
+    # and say the cache is unbounded, which is the opposite of what it would be showing. One frame's
+    # worth of rows is the threshold that separates the two: an unbounded cache grows by exactly
+    # `rows_per_frame` per extra frame, so anything under that cannot be length-scaling.
+    if seen_flat:
+        spread = max(seen_flat.values()) - min(seen_flat.values())
+        if spread >= p.get("rows_per_frame", 1008):
+            errs.append(f"{path}: windowed cache spread {spread} rows across lengths {seen_flat} is "
+                        "at least one frame — it is scaling with length, and §8.1's flat-VRAM claim "
+                        "does not hold at 768p")
+
+
 def check_result_files(errs, warns):
     seen = 0
-    for path in sorted(glob.glob("docs/phase0_*.json") + glob.glob("docs/phase2_*.json")):
+    for path in sorted(glob.glob("docs/phase0_*.json") + glob.glob("docs/phase2*.json")):
         p = json.load(open(path))
         if not isinstance(p, dict):
             continue
@@ -198,6 +252,9 @@ def check_result_files(errs, warns):
             sig = [p[k] for k in ("sigma_ref", "sigma_test") if k in p]
             check_config(path, p.get("latent_t"), sig, errs, warns)
             check_lengths(path, p, REQUIRED_VALIDATE, errs)
+        elif "by_length" in p:
+            missing = [k for k in REQUIRED_TIER1 if k not in p]
+            check_tier1(path, p, errs, warns)
         elif "by_source" in p:
             missing = [k for k in REQUIRED_WINDOW_COST if k not in p]
             for src, per_sigma in p["by_source"].items():

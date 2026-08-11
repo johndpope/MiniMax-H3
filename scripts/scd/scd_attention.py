@@ -275,7 +275,47 @@ def attention(attn, x, cos, sin, mask=None, cache=None):
     return attn.out_proj(out)
 
 
-def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=None):
+def chunk_plan(t, spans, chunk_frames, window=None):
+    """The chunk schedule: a list of `(rows, chunk_t, live)` in causal order.
+
+    Both loop orders in `encode_chunks` read this, rather than each cutting its own chunks. The
+    schedule depends on the clock, the spans and the window and on NOTHING about the blocks, which
+    is exactly the fact that makes the two orders equivalent — so it is worth making structural
+    instead of leaving it as two while-loops that happen to agree.
+
+    `rows` are packed row indices, `chunk_t` their times in cache order, and `live` the eviction
+    index applied AFTER the chunk (None when nothing is dropped).
+    """
+    frame_t = t[spans.video_start::spans.frame_rows]
+    # Stable for a reproducible cache layout, not for correctness: the mask reads times and
+    # nothing else, so rows sharing a time may be permuted freely and a mutant that shuffles them
+    # passes every test here. Reproducibility is still worth having when the cache becomes
+    # something Phase 5 carries across calls.
+    order = torch.argsort(t, stable=True)
+    ordered_t = t[order]
+
+    plan, held, start, frame = [], t.new_empty(0), 0, 0
+    while start < len(order):
+        frame = min(frame + chunk_frames, spans.latent_t)
+        # Everything not later than the last video frame in this chunk — which sweeps up the audio
+        # rows that share or precede its time, and on the first pass the context rows.
+        stop = len(order) if frame >= spans.latent_t else \
+            int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
+        chunk_t = ordered_t[start:stop]
+        held = torch.cat([held, chunk_t])
+        live = None
+        if window is not None and frame > window:
+            # Frames [frame-window, frame) survive; so does anything at CONTEXT, which is every
+            # comparison's -inf and would otherwise be the first thing evicted.
+            live = ((held >= frame_t[frame - window]) | (held == CONTEXT)).nonzero().squeeze(1)
+            held = held[live]
+        plan.append((order[start:stop], chunk_t, live))
+        start = stop
+    return plan
+
+
+def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=None,
+                  layer_major=False):
     """Run `blocks` over an already-packed stream, causally, in chunks. Returns (out, cache).
 
     Lives here rather than on `MiniMaxH3SCD` because it needs the mask, the cache and the clock —
@@ -288,47 +328,74 @@ def encode_chunks(blocks, h, ctx, t, spans, chunk_frames, block=False, window=No
     order is not row order — audio and video interleave in time while sitting in separate slabs of
     `[context | audio | video]` — so a chunk is a gather, the cache fills in time order, and the
     result is scattered back at the end.
+
+    Two loop orders over the same schedule, and the choice is not a micro-optimisation:
+
+        layer_major=False   chunk outer, block inner. Every block's cache is live at once, and
+                            every block is touched once per CHUNK. This is what streaming AR has
+                            to do, because chunk c+1 does not exist yet when chunk c runs.
+        layer_major=True    block outer, chunk inner. Only ONE block's cache is ever live, and
+                            each block is touched once for the whole clip.
+
+    They are the same arithmetic — block i's cache accumulates the same K/V from the same chunks
+    in the same order either way, because chunk c's input to block i is block i-1's output on
+    chunk c and nothing else. `test_layer_major_matches_chunk_major` asserts bit-equality.
+
+    What layer-major buys is the entire §8.1 memory problem: the KV cache is 840 KiB per row
+    across 30 blocks, but 28 KiB per row across one, so the unbounded cache at 768p/15s drops from
+    53 GB to 1.8 GB. Under block swapping it also cuts weight traffic by the chunk count — 30
+    transfers instead of 30 x n_chunks, which at 92 chunks is the difference between the encoder
+    being compute-bound and being a PCIe benchmark.
+
+    What it costs is that the clip must exist up front. That is true for the offline encode-once
+    pass and for training, and false for Phase 5's AR driver, so this is a flag rather than a
+    replacement. `cache` in this mode is the LAST block's cache alone; there is no full one to
+    return, which is the point.
     """
     build = block_mask if block else causal_mask
-    frame_t = t[spans.video_start::spans.frame_rows]
-
-    # Stable for a reproducible cache layout, not for correctness: the mask reads times and
-    # nothing else, so rows sharing a time may be permuted freely and a mutant that shuffles them
-    # passes every test here. Reproducibility is still worth having when the cache becomes
-    # something Phase 5 carries across calls.
-    order = torch.argsort(t, stable=True)
-    ordered_t = t[order]
-    cache = KVCache(len(blocks))
     t_emb, mod_row, cos, sin = ctx
+    plan = chunk_plan(t, spans, chunk_frames, window)
 
+    def step(blk, x_in, out, cache_slot, masks):
+        held = t.new_empty(0)
+        for j, (rows, chunk_t, live) in enumerate(plan):
+            if masks[j] is None:
+                # Keys are what the cache already holds, then this chunk — the order `attention`
+                # appends in. Under a window `held` is not `ordered_t[:start]`, so it is tracked.
+                masks[j] = build(chunk_t, torch.cat([held, chunk_t]))
+            out[rows] = run_block(blk, x_in[rows], (t_emb, mod_row[rows], cos[rows], sin[rows]),
+                                  mask=masks[j], cache=cache_slot)
+            held = torch.cat([held, chunk_t])
+            if live is not None:
+                cache_slot.keep(live)
+                held = held[live]
+
+    if layer_major:
+        # Masks depend only on the schedule, so they are built on the first block and reused —
+        # otherwise this rebuilds every BlockMask once per block and measures the compiler.
+        masks = [None] * len(plan)
+        x = h
+        for blk in blocks:
+            cache = KVCache(1)
+            out = torch.empty_like(x)
+            step(blk, x, out, cache[0], masks)
+            x = out
+        return x, cache
+
+    cache = KVCache(len(blocks))
     out = torch.empty_like(h)
-    held = t.new_empty(0)   # times of the rows currently in the cache, in cache order
-    start, frame = 0, 0
-    while start < len(order):
-        frame = min(frame + chunk_frames, spans.latent_t)
-        # Everything not later than the last video frame in this chunk — which sweeps up the audio
-        # rows that share or precede its time, and on the first pass the context rows.
-        stop = len(order) if frame >= spans.latent_t else \
-            int(torch.searchsorted(ordered_t, frame_t[frame - 1], right=True))
-        rows = order[start:stop]
-        chunk_t = ordered_t[start:stop]
-        chunk_ctx = (t_emb, mod_row[rows], cos[rows], sin[rows])
-        # Keys are what the cache already holds, then this chunk — the order `attention` appends
-        # in. Under a window `held` is no longer `ordered_t[:start]`, so it is tracked rather than
-        # re-derived from the prefix.
+    held = t.new_empty(0)
+    for rows, chunk_t, live in plan:
         m = build(chunk_t, torch.cat([held, chunk_t]))
         x = h[rows]
         for i, blk in enumerate(blocks):
-            x = run_block(blk, x, chunk_ctx, mask=m, cache=cache[i])
+            x = run_block(blk, x, (t_emb, mod_row[rows], cos[rows], sin[rows]),
+                          mask=m, cache=cache[i])
         out[rows] = x
         held = torch.cat([held, chunk_t])
-        if window is not None and frame > window:
-            # Frames [frame-window, frame) survive; so does anything at CONTEXT, which is every
-            # comparison's -inf and would otherwise be the first thing evicted.
-            live = ((held >= frame_t[frame - window]) | (held == CONTEXT)).nonzero().squeeze(1)
+        if live is not None:
             cache.keep(live)
             held = held[live]
-        start = stop
     return out, cache
 
 
