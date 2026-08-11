@@ -755,7 +755,9 @@ Frame 0's context half is zeros. Conditioning it on its own encoder feature is t
 
 Two knobs are deliberately left undecided, both because nothing measured picks between them: `media_start` (whether text and ref rows join the pack — 1.26× on the frame, see above) and `duplicate_pos` (whether the context half takes the target frame's RoPE rows, as CastleHill's `_duplicate_pe` does and as Tier 1 timed, or its own).
 
-Five cases in `test_scd_model.py`, mutation-checked: removing the shift, retiming the context to the noisy step, letting frame 0 read its own encoder rows, and taking the text prefix from encoder output are each caught, each by the intended case.
+`decode_frame(velocity=True)` runs the base's `final_layer` to give `[frame_rows, video_patch_dim]`, which is what a flow-matching loss is scored on. This module previously had no output path on the grounds that the final layer wants a `video_t_index` derived from a sorted-unique over timesteps, and a second copy of that derivation would drift. It does not need copying: the target rows' `mod_row` already encodes their timestep as `index * MODALITY_NUM + tag`, so the index is a division on a value the base built.
+
+Six cases in `test_scd_model.py`, mutation-checked: removing the shift, retiming the context to the noisy step, letting frame 0 read its own encoder rows, and taking the text prefix from encoder output are each caught by the intended case. The velocity-head case needed a second pass to be worth anything — the first version read the head's index with the same expression the implementation uses, which cannot detect that expression being wrong, and tested only the text-bearing pack, where the first and last rows share a timestep and so a head reading the wrong end is indistinguishable. Rebuilding the expected index from the base's untouched `mod_row` and running both packs catches both mutants.
 
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 

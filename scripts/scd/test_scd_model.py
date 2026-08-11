@@ -299,6 +299,49 @@ def test_decoder_context_cannot_see_its_own_frame(_stock, scd, inputs, _consumed
 
 
 @case
+def test_velocity_head_reads_the_noisy_timestep(_stock, scd, inputs, _consumed):
+    """`velocity=True` modulates the output head at the TARGET frame's timestep, not the context's.
+
+    `final_layer` takes a `video_t_index` into the timestep table, and the decoder's table holds
+    both halves' timesteps concatenated — clean first. Selecting from the clean half would score
+    the loss through a modulation for sigma=0 while the rows being predicted are at sigma, which
+    is wrong in a way that produces finite, plausible, slowly-converging numbers rather than an
+    error.
+
+    Both packs are checked. With text rows present the row at `mod[0]` happens to carry the same
+    timestep as the target -- text shares the video step in the base's table -- so a head that
+    read the FIRST row instead of the last is indistinguishable there and only the text-free pack
+    catches it. The expected index is rebuilt from the base's own untouched `mod_row` plus the
+    clean table's size, not from the same expression the implementation uses; a test that
+    recomputes the implementation cannot detect the implementation being wrong.
+    """
+    mm = sys.modules[type(scd.base).__module__]
+    enc, cctx, nh, nctx, sp, media_start = _two_preambles(scd, inputs)
+    clean_rows = cctx[0].shape[0]
+    want_idx = clean_rows + int(nctx[1][sp.video_start]) // mm.MODALITY_NUM
+    assert media_start > 0, "no text rows in this fixture — one of the two packs is vacuous"
+
+    for pack in (media_start, None):
+        with torch.no_grad():
+            hidden = scd.decode_frame(enc, cctx, nh, nctx, sp, 1, media_start=pack)
+            v = scd.decode_frame(enc, cctx, nh, nctx, sp, 1, media_start=pack, velocity=True)
+            _, (t_emb, _, _, _) = scd.decoder_frame_input(enc, cctx, nh, nctx, sp, 1,
+                                                          media_start=pack)
+            want = scd.base.final_layer(hidden, t_emb, want_idx)
+            clean = scd.base.final_layer(hidden, t_emb, 0)
+
+        label = "with text" if pack else "text-free"
+        assert v.shape == (sp.frame_rows, scd.base.final_layer.video_out.out_features), \
+            f"{label}: velocity is {tuple(v.shape)}, expected ({sp.frame_rows}, video_patch_dim)"
+        assert torch.isfinite(v).all(), f"{label}: velocity head produced non-finite values"
+        assert torch.equal(v, want), \
+            f"{label}: head did not modulate at table row {want_idx}, the noisy video timestep"
+        assert not torch.equal(want, clean), \
+            f"{label}: the head gives the same answer at the clean timestep, so this test could " \
+            "not have detected a wrong index"
+
+
+@case
 def test_production_split(_stock, _scd, inputs, _consumed):
     """The module's real defaults, on a 50-block model — the split Phase 2 will inherit.
 

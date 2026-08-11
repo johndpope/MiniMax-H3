@@ -20,9 +20,12 @@ drift from the real one exactly the way Phase 0's hand-transcribed numbers drift
 `preamble()` instead captures the base's own block arguments through a forward hook, so whatever
 the preamble does, the encoder and decoder see the same thing.
 
-There is also no pixel output path. The final layer needs `video_t_index`, which the preamble
-derives from a sorted-unique over the distinct timesteps; reproducing that here would be the same
-drift risk for no benefit until there is something to decode into pixels.
+There is no pixel output path either, but `decode_frame(velocity=True)` does run the base's own
+`final_layer` — a flow-matching loss needs it. The reason this was held back was that the final
+layer wants a `video_t_index` derived from a sorted-unique over the distinct timesteps, and a
+second copy of that would drift. It turns out not to need copying: the rows' `mod_row` already
+encodes the timestep as `index * MODALITY_NUM + tag`, so the index is a division on a value the
+base itself built. Nothing here decodes latents back to pixels.
 
 Usage:
     from scd_model import MiniMaxH3SCD
@@ -302,18 +305,32 @@ class MiniMaxH3SCD(nn.Module):
 
         return (torch.cat(x), (t_emb, torch.cat(mod), torch.cat(cos), torch.cat(sin)))
 
-    def decode_frame(self, enc, clean_ctx, noisy_h, noisy_ctx, spans, frame, **kwargs):
+    def decode_frame(self, enc, clean_ctx, noisy_h, noisy_ctx, spans, frame, velocity=False,
+                     **kwargs):
         """`decoder_frame_input` through the decoder blocks. Returns the target frame's rows only.
 
         The context half and any text rows are inputs, not outputs: they exist to condition the
         `frame_rows` that get a velocity, and returning them would invite scoring a loss on rows
         the encoder already produced.
+
+        `velocity=True` runs the base's own `final_layer` to get `[frame_rows, video_patch_dim]`,
+        which is what a flow-matching loss is scored on. That layer wants a `video_t_index` into
+        the timestep table, and the module docstring's reason for having no output path was that
+        reproducing the base's sorted-unique over timesteps here would drift from it. It does not
+        have to be reproduced: the target rows' own `mod_row` already encodes their timestep as
+        `index * MODALITY_NUM + tag`, so the index is a division on a value the base built.
         """
         x, ctx = self.decoder_frame_input(enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
                                           **kwargs)
         for block in self.decoder_blocks:
             x = block(x, *ctx)
-        return x[-spans.frame_rows:]
+        r = spans.frame_rows
+        out = x[-r:]
+        if not velocity:
+            return out
+        mm = sys.modules[type(self.base).__module__]
+        t_emb, mod = ctx[0], ctx[1]
+        return self.base.final_layer(out, t_emb, int(mod[-1]) // mm.MODALITY_NUM)
 
     def forward(self, **forward_kwargs):
         h, ctx = self.encode(**forward_kwargs)
