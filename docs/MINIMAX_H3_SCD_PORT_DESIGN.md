@@ -802,6 +802,23 @@ The run also logs a **fixed (clip, σ, noise) eval grid** every 250 steps, becau
 
 Seven cases in `test_phase3_train.py`, nine mutants, all caught — including the flow-target sign flip, which is the one that would have cost the whole run: it trains the ODE backwards, the loss falls at exactly the same rate, every diagnostic looks healthy, and only sampling reveals it.
 
+#### How the kill criterion will be read, written down before the numbers exist (2026-08-11)
+
+`scripts/scd/phase3_sample.py`. Committing to this in advance because "not pure noise" is exactly the kind of criterion that a run talks you into afterwards.
+
+**The baseline is the unadapted split, not random init.** `--lora` omitted installs the adapters and leaves them at zero: same module tree, same numerics, same code path, so the only difference from the trained run is the weights. That is a strictly harder bar than the phase's "decoder-only random init" and it is the honest one — if the trained adapters cannot beat what the surgery gives away free, the LoRA has not paid for itself.
+
+**Correlation, not MSE.** A decoder that collapses to the dataset mean posts a *lower* MSE than the truth's own variance while carrying no frame-specific information, so MSE alone scores a collapse as a success. `corr` is ~0 for anything uncorrelated with the target, including a confident constant. Both are reported, along with what pure noise of the truth's scale would score, so "not pure noise" is a comparison rather than an impression. The headline is `corr_ctx` — frames 1.. only, because frame 0 has a zeroed context half and is trained on roughly half of steps, so folding it in moves the number for reasons unrelated to the split.
+
+**Two modes, and the gap between them is the finding.** `oracle` denoises with the encoder reading the real clean latents — the regime training ran in, so it measures whether the one-step conditional was learned at all. It is a ceiling and must not be reported as a result. `ar` is the rollout: the encoder only ever sees frames the decoder itself produced. Training had **no scheduled sampling**, so a large oracle→AR gap is the *expected* outcome and is evidence for adding §6.4's curriculum — not evidence against the split. The two failures to distinguish are "the decoder never learned the conditional" (oracle is also flat) and "it learned it and cannot survive its own output" (oracle is fine, AR collapses). Only the first is a kill.
+
+Two things mutation testing changed about the sampler, one of them a belief rather than a bug:
+
+- **Seeding the AR context from ground truth is harmless on its own.** It looks like the classic leak and it is not: the encoder is frame-causal, so by the time frame `f` is decoded every frame below it has already been overwritten by generated content, and ground truth above it cannot reach the decoder. The dangerous mutant is that change *together* with a missing write-back — which turns `ar` into `oracle` — and that is what the case actually pins. Worth recording because the wrong version of this belief would have made the test look sufficient.
+- **A square fixture cannot see a transposed `unpatchify`.** The real clips are 32×32, so nothing at training geometry would have caught it either; the suite's fixture is 8×12.
+
+The case that earns its keep is `test_a_perfect_velocity_recovers_the_clip`: feed the sampler the true velocity and it must return the true latent to ~1e-5, since at σ=1 the noisy latent *is* the noise and one Euler step to 0 gives `noise + (x0 - noise)`. A sign-flipped sampler does not crash — it produces a latent with a sane standard deviation and near-zero correlation, which is indistinguishable from "the split did not learn" and would have been reported as a kill.
+
 ### Phase 3 — token_concat decoder + train loop (3–5 weeks)
 
 - `forward_decoder_per_frame` + Fizgig-like LoRA train on small iso set (e.g. 20–50 clips @ **512**, short T).  
