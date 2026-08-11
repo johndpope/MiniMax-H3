@@ -49,7 +49,9 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scd_data import ClipSet, epoch_order                              # noqa: E402
-from scd_lora import add_lora, lora_parameters, lora_report, lora_state_dict  # noqa: E402
+from scd_lora import (  # noqa: E402
+    add_lora, lora_param_groups, lora_parameters, lora_report, lora_state_dict,
+)
 from scd_model import DEFAULT_DECODER_SOURCE, DEFAULT_ENCODER_DEPTH, MiniMaxH3SCD  # noqa: E402
 
 
@@ -63,30 +65,69 @@ def import_fizgig(src):
 
 
 class Batch:
-    """One clip's clean latent, noise, sigma and text — everything a step's two packs need.
+    """One clip's clean latent, noise, sigma(s) and text — everything a step's packs need.
 
     Holds `noise` rather than only the noised latent because the flow target is `x0 - noise` and
     recovering it from `(noised, sigma, x0)` divides by sigma, which is unbounded as sigma -> 0.
+
+    `sigma` is a scalar OR one value per latent frame. Per-frame is what the SCD reference
+    implementation does — it draws a timestep per (batch, frame), giving `latent_t` sigma samples
+    per step where a clip-wide draw gives one. The target does not depend on sigma, so this costs
+    nothing in the loss; what it costs is one `preamble` per DISTINCT sigma, because the base packs
+    a single video timestep per forward. A scalar collapses to exactly one pack, which is what
+    keeps `evaluate`'s fixed grid comparable with the runs that predate this.
     """
 
     def __init__(self, clip, sigma, generator=None):
         self.name = clip["name"]
         self.x0 = clip["video_latent"].float()
         self.text = clip["text_embeds"]
-        self.sigma = float(sigma)
+        latent_t = self.x0.shape[2]
+        s = torch.as_tensor(sigma, dtype=torch.float32, device=self.x0.device).reshape(-1)
+        if s.numel() == 1:
+            s = s.expand(latent_t)
+        elif s.numel() != latent_t:
+            raise ValueError(f"{s.numel()} sigmas for {latent_t} frames")
+        self.sigmas = s
         self.noise = torch.randn(self.x0.shape, device=self.x0.device, dtype=torch.float32,
                                  generator=generator)
-        self.noised = (1.0 - self.sigma) * self.x0 + self.sigma * self.noise
-        self.t = torch.tensor([1.0 - self.sigma], device=self.x0.device)
+        b = s.view(1, 1, -1, 1, 1)
+        self.noised = (1.0 - b) * self.x0 + b * self.noise
+
+    @property
+    def t(self):
+        """The single timestep `preamble` packs at, shape (1,). Only defined for a clip-wide sigma.
+
+        Raising rather than returning the mean is the point: `preamble` takes ONE video timestep and
+        broadcasts silently against a longer tensor, so a per-frame batch handed here would pack
+        every frame at frame 0's noise level and still run. `step_backward` builds its own `t` per
+        distinct sigma and does not come through here.
+        """
+        if not bool((self.sigmas == self.sigmas[0]).all()):
+            raise ValueError("this batch has per-frame sigmas; there is no single timestep to pack "
+                             "at — build one per distinct sigma as step_backward does")
+        return 1.0 - self.sigmas[:1]
+
+    @property
+    def sigma(self):
+        """The clip-wide value when there is one, else the mean — for logging only."""
+        return float(self.sigmas.mean())
 
     @property
     def target(self):
         return self.x0 - self.noise
 
 
-def step_backward(scd, mm, batch, *, window, chunk_frames, context_noise, score_first_frame,
+def step_backward(scd, mm, batches, *, window, chunk_frames, context_noise, score_first_frame,
                   media_start_on, duplicate_pos, checkpoint=True):
     """Flow-matching loss over the frames this step scores, backward included. Returns (loss, stats).
+
+    `batches` is one `Batch` or several drawn from the SAME clip. Several is the reference
+    implementation's `decoder_multi_batch`: the encoder reads only the clean latent, so it is
+    independent of sigma and noise and one encoder pass can serve K draws. That trade is far better
+    here than in the reference — our encoder is 30 blocks against a 7-block decoder, so a second
+    draw is ~23% more compute for twice the decoder's gradient signal. It also composes with the
+    two-stage backward for free, since the extra frames simply accumulate onto the same leaf.
 
     The backward is here rather than at the call site because it runs in two stages, and the split
     is the only reason a 7-frame clip fits. Every frame reads the same `enc`, so scoring them all
@@ -109,34 +150,47 @@ def step_backward(scd, mm, batch, *, window, chunk_frames, context_noise, score_
     "the first frame is given"; substituting clean rows into the noisy pack would be the faithful
     one, and cannot be done without also retiming those rows, which the packer owns.
     """
-    clean_kwargs = dict(video_latent=batch.x0, t=torch.tensor([1.0], device=batch.x0.device),
-                        text_embeds=batch.text)
+    if isinstance(batches, Batch):
+        batches = (batches,)
+    b0 = batches[0]
+    clean_kwargs = dict(video_latent=b0.x0, t=torch.tensor([1.0], device=b0.x0.device),
+                        text_embeds=b0.text)
     enc, clean_ctx, _ = scd.encode_chunked(chunk_frames, window=window, layer_major=True,
                                            keep_audio=True, checkpoint=checkpoint, **clean_kwargs)
     if context_noise:
         enc = enc + context_noise * torch.randn_like(enc)
 
-    noisy_h, noisy_ctx, pack = scd.preamble(video_latent=batch.noised, t=batch.t,
-                                            text_embeds=batch.text)
-    spans = scd.spans(batch.x0, enc.shape[0])
+    spans = scd.spans(b0.x0, enc.shape[0])
     r = spans.frame_rows
-    target = mm.patchify_video(batch.target, scd.base.patch_size)
-
     first = 0 if score_first_frame else 1
-    n = spans.latent_t - first
+    n = (spans.latent_t - first) * len(batches)
     leaf = enc.detach().requires_grad_(enc.requires_grad)
 
     total, v_sq = 0.0, 0.0
-    for f in range(first, spans.latent_t):
-        pred = scd.decode_frame(leaf, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=True,
-                                media_start=pack["media_start"] if media_start_on else None,
-                                duplicate_pos=duplicate_pos)
-        want = target[f * r:(f + 1) * r].to(pred.dtype)
-        part = F.mse_loss(pred.float(), want.float()) / n
-        if leaf.requires_grad:
-            part.backward()
-        total += float(part.detach())
-        v_sq += float(pred.detach().float().var())
+    for batch in batches:
+        target = mm.patchify_video(batch.target, scd.base.patch_size)
+        # One pack per DISTINCT sigma, keyed by value: a clip-wide sigma packs once, which is what
+        # every run before per-frame sigma did and what `evaluate` still does.
+        packed = {}
+
+        for f in range(first, spans.latent_t):
+            key = round(float(batch.sigmas[f]), 6)
+            if key not in packed:
+                packed[key] = scd.preamble(
+                    video_latent=batch.noised,
+                    t=torch.tensor([1.0 - key], device=batch.x0.device),
+                    text_embeds=batch.text)
+            noisy_h, noisy_ctx, pack = packed[key]
+
+            pred = scd.decode_frame(leaf, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=True,
+                                    media_start=pack["media_start"] if media_start_on else None,
+                                    duplicate_pos=duplicate_pos)
+            want = target[f * r:(f + 1) * r].to(pred.dtype)
+            part = F.mse_loss(pred.float(), want.float()) / n
+            if leaf.requires_grad:
+                part.backward()
+            total += float(part.detach())
+            v_sq += float(pred.detach().float().var())
 
     if leaf.grad is not None:
         enc.backward(leaf.grad)
@@ -144,7 +198,8 @@ def step_backward(scd, mm, batch, *, window, chunk_frames, context_noise, score_
     # v_std is CastleHill's diagnostic: a decoder that collapses reports a velocity variance that
     # falls toward zero while the loss also falls, because predicting the mean beats predicting
     # nothing. Loss alone cannot tell those apart.
-    return total, {"frames": n, "v_std": math.sqrt(v_sq / n), "seq_len": enc.shape[0]}
+    return total, {"frames": n, "draws": len(batches), "v_std": math.sqrt(v_sq / n),
+                   "seq_len": enc.shape[0]}
 
 
 EVAL_SIGMAS = (0.25, 0.5, 0.9)
@@ -226,6 +281,19 @@ def main():
                     help="give the context half frame f-1's real RoPE rows instead of duplicating "
                          "the target's, which is what CastleHill does and Tier 1 timed")
     ap.add_argument("--sigma-shift", default=None, help="passed to fizgig sample_sigmas")
+    # The SCD reference draws a timestep per (batch, frame); v0 drew one per clip, which is 7x less
+    # sigma coverage per step at the same cost. Per-frame is not free here the way it is there --
+    # the base packs ONE video timestep per forward, so each distinct sigma costs a `preamble`.
+    ap.add_argument("--per-frame-sigma", action="store_true", default=True)
+    ap.add_argument("--clip-sigma", dest="per_frame_sigma", action="store_false",
+                    help="one sigma for the whole clip, as the v0 run did")
+    # `decoder_multi_batch` in the reference. The encoder reads only the clean latent, so one
+    # encoder pass serves K noise draws; at 30 encoder blocks against 7 decoder blocks a second
+    # draw is ~23%% more compute for twice the decoder's gradient signal.
+    ap.add_argument("--draws", type=int, default=2,
+                    help="decoder noise draws per encoder pass")
+    ap.add_argument("--decoder-lr-ratio", type=float, default=2.0,
+                    help="decoder adapters train at lr * this; the reference uses 2.0")
     ap.add_argument("--no-checkpoint", action="store_true",
                     help="hold the encoder's activations instead of recomputing them. Faster per "
                          "step and does not fit: 30 blocks over ~2100 rows is ~10 GB against "
@@ -279,7 +347,10 @@ def main():
           f"(rank {args.rank}, alpha {args.alpha or args.rank})", flush=True)
     scd.eval()                       # the base stays in eval; only the adapters learn
 
-    opt = torch.optim.AdamW(lora_parameters(scd), lr=args.lr, weight_decay=0.0)
+    groups = lora_param_groups(scd, args.lr, args.decoder_lr_ratio)
+    print(f"opt         : {len(groups)} groups, lr " +
+          " / ".join(f"{g['lr']:.2e}x{len(g['params'])}" for g in groups), flush=True)
+    opt = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0.0)
     os.makedirs(args.out, exist_ok=True)
     log_path = os.path.join(args.out, "log.jsonl")
     gen = torch.Generator(device=device).manual_seed(args.seed)
@@ -307,15 +378,22 @@ def main():
             name = epoch_order(order, args.seed, epoch)[i]
             clip_data = clip if args.dry_run else clips.load(name, device=device,
                                                              dtype=torch.bfloat16)
-            sigma = sample_sigmas(1, device, shift=args.sigma_shift, generator=gen)
-            batch = Batch(clip_data, sigma.reshape(-1)[0], generator=gen)
+            # Each draw gets its OWN sigmas as well as its own noise. The reference varies only the
+            # noise across `decoder_multi_batch`, but the encoder pass is what the reuse is for and
+            # it is independent of both, so redrawing sigma too costs nothing and widens the
+            # coverage the extra draw is being bought for.
+            n_sigma = clip_data["video_latent"].shape[2] if args.per_frame_sigma else 1
+            batches = [Batch(clip_data,
+                             sample_sigmas(n_sigma, device, shift=args.sigma_shift, generator=gen),
+                             generator=gen)
+                       for _ in range(args.draws)]
 
             if eval_names and (step == 1 or step % args.eval_every == 0):
                 run_eval(step - 1, log)
 
             score_first = torch.rand(1, generator=cpu_gen).item() >= args.first_frame_cond_p
             opt.zero_grad(set_to_none=True)
-            loss, stats = step_backward(scd, mm, batch, score_first_frame=score_first, **step_kw)
+            loss, stats = step_backward(scd, mm, batches, score_first_frame=score_first, **step_kw)
 
             gnorm = torch.nn.utils.clip_grad_norm_(lora_parameters(scd), 1.0)
             opt.step()
@@ -323,7 +401,8 @@ def main():
                 stats["peak_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
                 torch.cuda.reset_peak_memory_stats()
 
-            rec = {"step": step, "clip": batch.name, "sigma": round(batch.sigma, 4),
+            rec = {"step": step, "clip": batches[0].name,
+                   "sigma": round(sum(b.sigma for b in batches) / len(batches), 4),
                    "loss": loss, "grad_norm": float(gnorm),
                    "elapsed_s": round(time.time() - t0, 1), **stats}
             log.write(json.dumps(rec) + "\n")
@@ -331,7 +410,7 @@ def main():
                 log.flush()
                 print(f"step {step:>5}  loss {rec['loss']:.4f}  v_std {rec['v_std']:.3f}  "
                       f"sigma {rec['sigma']:.3f}  |g| {rec['grad_norm']:.2e}  "
-                      f"{rec.get('peak_gb', 0):.1f}GB  {rec['elapsed_s']:.0f}s  {batch.name}",
+                      f"{rec.get('peak_gb', 0):.1f}GB  {rec['elapsed_s']:.0f}s  {rec['clip']}",
                       flush=True)
 
             if step % args.save_every == 0 or step == args.steps:
@@ -345,6 +424,9 @@ def main():
                     "window": str(args.window), "clips": ",".join(order),
                     "decoder_text": str(bool(args.decoder_text)),
                     "duplicate_pos": str(not args.own_context_pos),
+                    "draws": str(args.draws),
+                    "per_frame_sigma": str(bool(args.per_frame_sigma)),
+                    "decoder_lr_ratio": str(args.decoder_lr_ratio),
                 })
                 print(f"saved       : {path}", flush=True)
 

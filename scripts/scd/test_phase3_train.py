@@ -227,6 +227,113 @@ def test_context_noise_perturbs_the_loss(mm, scd, clip):
     assert loss_at(2.0) != loss_at(0.0), "eta=2 left the loss unchanged; context noise is not wired"
 
 
+@case
+def test_per_frame_sigma_noises_each_frame_at_its_own_level(_mm, _scd, clip):
+    """A vector sigma must noise frame f at sigma[f], and must refuse to name one timestep.
+
+    The failure this catches is the quiet one: `s.view(1,1,-1,1,1)` broadcasting against the wrong
+    axis noises every frame at sigma[0] and leaves the loss looking entirely healthy, because the
+    target does not depend on sigma at all. Only the noised latent knows.
+    """
+    from phase3_train import Batch
+
+    sig = torch.linspace(0.1, 0.9, 7)
+    b = Batch(clip, sig, generator=torch.Generator().manual_seed(0))
+    for f in range(7):
+        want = (1 - sig[f]) * b.x0[:, :, f] + sig[f] * b.noise[:, :, f]
+        assert torch.allclose(b.noised[:, :, f], want, atol=1e-6), \
+            f"frame {f} was not noised at sigma {sig[f]:.2f} — the per-frame axis is wrong"
+
+    try:
+        b.t
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a per-frame batch handed back a single timestep; `preamble` would "
+                             "broadcast it and pack every frame at frame 0's noise level")
+    assert torch.allclose(Batch(clip, 0.4).t, torch.tensor([0.6])), "a scalar sigma lost its t"
+
+
+@case
+def test_repeated_draws_average_rather_than_accumulate(mm, scd, clip):
+    """K identical draws must give the SAME loss and gradient as one, not K times either.
+
+    `decoder_multi_batch` divides by `n = frames * draws`, and getting that denominator wrong is
+    invisible in the loss curve's shape — it rescales every step equally — while silently making
+    the effective learning rate K times what the flag says.
+    """
+    from phase3_train import Batch, step_backward
+    from scd_lora import add_lora, lora_parameters
+
+    made = add_lora(scd, rank=4)
+    for m in made.values():
+        m.lora_up.weight.data.normal_(0, 0.02)
+    params = lora_parameters(scd)
+    kw = dict(window=None, chunk_frames=1, context_noise=0.0, score_first_frame=True,
+              media_start_on=False, duplicate_pos=True, checkpoint=False)
+
+    def run(k):
+        for p in params:
+            p.grad = None
+        bs = [Batch(clip, 0.7, generator=torch.Generator().manual_seed(1)) for _ in range(k)]
+        loss, stats = step_backward(scd, mm, bs, **kw)
+        return loss, stats, [p.grad.clone() for p in params]
+
+    one, s1, g1 = run(1)
+    three, s3, g3 = run(3)
+    assert s1["draws"] == 1 and s3["draws"] == 3, f"draws not reported: {s1}, {s3}"
+    assert s3["frames"] == 3 * s1["frames"], f"{s3['frames']} scored frames, not 3x {s1['frames']}"
+    assert abs(one - three) < 1e-6, f"three identical draws moved the loss {one} -> {three}"
+    worst = max(float((a - b).abs().max()) for a, b in zip(g1, g3))
+    assert worst < 1e-8, f"three identical draws changed the gradient by {worst:.3e}"
+
+
+@case
+def test_distinct_sigmas_cost_one_encoder_pass_and_one_pack_each(mm, scd, clip):
+    """The whole point of the reuse: draws multiply `preamble`, never `encode_chunked`.
+
+    And a clip-wide sigma must still pack exactly ONCE per draw — that is what keeps `evaluate`'s
+    fixed grid, and every number the v0 run produced, comparable with runs that pack per frame.
+    """
+    from phase3_train import Batch, step_backward
+
+    kw = dict(window=None, chunk_frames=1, context_noise=0.0, score_first_frame=True,
+              media_start_on=False, duplicate_pos=True, checkpoint=False)
+    calls = {"enc": 0, "pack": 0}
+    real_enc, real_pre = scd.encode_chunked, scd.preamble
+
+    def counted_enc(*a, **k):
+        calls["enc"] += 1
+        return real_enc(*a, **k)
+
+    def counted_pre(*a, **k):
+        calls["pack"] += 1
+        return real_pre(*a, **k)
+
+    scd.encode_chunked, scd.preamble = counted_enc, counted_pre
+    try:
+        # No grad: this counts calls, and the un-adapted model has every base parameter trainable,
+        # so a real backward would free the `clean_ctx` graph the next frame still needs.
+        with torch.no_grad():
+            flat = [Batch(clip, 0.7, generator=torch.Generator().manual_seed(i)) for i in range(2)]
+            step_backward(scd, mm, flat, **kw)
+            # 1 + K, not K: `encode_chunked` packs the CLEAN sequence through `preamble` too, and
+            # that one is the pass being shared.
+            assert calls == {"enc": 1, "pack": 3}, \
+                f"two clip-wide draws cost {calls}, not 1 enc / 1 clean + 2 noisy packs"
+
+            calls.update(enc=0, pack=0)
+            varied = [Batch(clip, torch.linspace(0.1, 0.9, 7),
+                            generator=torch.Generator().manual_seed(i)) for i in range(2)]
+            step_backward(scd, mm, varied, **kw)
+            assert calls["enc"] == 1, f"per-frame sigma re-ran the encoder {calls['enc']} times; " \
+                                      "it reads only the CLEAN latent and cannot depend on sigma"
+            assert calls["pack"] == 15, \
+                f"{calls['pack']} packs, not 1 clean + 2 draws x 7 distinct sigmas"
+    finally:
+        scd.encode_chunked, scd.preamble = real_enc, real_pre
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")

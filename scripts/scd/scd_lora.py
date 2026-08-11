@@ -175,6 +175,28 @@ def lora_parameters(scd):
     return [p for p in scd.parameters() if p.requires_grad]
 
 
+def lora_param_groups(scd, lr, decoder_ratio):
+    """AdamW groups splitting encoder from decoder adapters, decoder at `lr * decoder_ratio`.
+
+    The split is by `lora_name` prefix, which is why `attach` gives the decoder its own
+    (`lora_unet_scddec_`) — walking `named_modules` would key on the tree path, where both halves
+    sit under identically-shaped blocks and are not distinguishable.
+
+    A ratio of 1.0 returns ONE group holding the same parameter list `lora_parameters` builds, so
+    the default path is bit-identical to a plain `AdamW(lora_parameters(scd), lr=lr)`.
+    """
+    enc, dec = [], []
+    for mod in scd.modules():
+        if isinstance(mod, LoRALinear):
+            (dec if mod.lora_name.startswith("lora_unet_scddec_") else enc).extend(
+                [mod.lora_down.weight, mod.lora_up.weight])
+    if not dec:
+        raise ValueError("no decoder adapters found — add_lora was called with decoder_slots=()")
+    if decoder_ratio == 1.0:
+        return [{"params": enc + dec, "lr": lr}]
+    return [{"params": enc, "lr": lr}, {"params": dec, "lr": lr * decoder_ratio}]
+
+
 def lora_state_dict(scd, dtype=torch.float32):
     """sd-scripts layout: `{lora_name}.lora_down.weight`, `.lora_up.weight`, `.alpha`.
 

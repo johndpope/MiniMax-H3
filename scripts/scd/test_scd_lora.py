@@ -248,6 +248,34 @@ def test_adapter_params_stay_fp32_under_a_bf16_base(scd, _mm, _inputs):
     assert torch.isfinite(out).all()
 
 
+@case
+def test_lr_ratio_splits_the_two_halves_and_loses_nothing(scd, _mm, _inputs):
+    """Every trainable parameter lands in exactly one group, and the decoder's is the scaled one.
+
+    The split is by name, so it fails in a specific and quiet way: a prefix that stops matching
+    puts the decoder adapters in the encoder group, the ratio silently becomes 1.0, and the run
+    trains — just not the run that was configured. Counting the partition is what catches that.
+    """
+    from scd_lora import add_lora, lora_param_groups, lora_parameters
+
+    made = add_lora(scd, rank=4)
+    n_dec = sum(1 for name in made if name.startswith("lora_unet_scddec_"))
+    assert 0 < n_dec < len(made), f"{n_dec} of {len(made)} decoder adapters — nothing to split"
+
+    groups = lora_param_groups(scd, 1e-4, 2.0)
+    assert [g["lr"] for g in groups] == [1e-4, 2e-4]
+    enc, dec = (len(g["params"]) for g in groups)
+    assert dec == 2 * n_dec, f"{dec} decoder tensors for {n_dec} adapters (2 factors each)"
+    assert enc + dec == len(lora_parameters(scd)), \
+        f"{enc + dec} grouped parameters against {len(lora_parameters(scd))} trainable ones"
+    ids = {id(p) for g in groups for p in g["params"]}
+    assert len(ids) == enc + dec, "a parameter appears in both groups; AdamW would step it twice"
+
+    flat = lora_param_groups(scd, 1e-4, 1.0)
+    assert len(flat) == 1 and len(flat[0]["params"]) == enc + dec, \
+        "ratio 1.0 did not collapse to the single group the pre-ratio runs used"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fizgig-src", default="/media/2TB/Fizgig/src")
