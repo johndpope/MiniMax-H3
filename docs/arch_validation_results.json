@@ -1,0 +1,174 @@
+{
+  "timestamp": "2026-08-12T01:52:21Z",
+  "git_sha": "ed06a2c",
+  "ok": true,
+  "unit_tests": [
+    {
+      "name": "test_scd_attention.py",
+      "path": "scripts/scd/test_scd_attention.py",
+      "ok": true,
+      "skipped": false,
+      "seconds": 6.398,
+      "exit_code": 0,
+      "passed": 19,
+      "failed": 0,
+      "total": 19,
+      "stdout_tail": "ok    test_spans_agree_with_the_packed_sequence\nok    test_mask_is_frame_causal\nok    test_loose_mask_lets_context_see_video\nok    test_unmasked_matches_base\nok    test_strict_mask_composes_across_blocks\nok    test_loose_mask_leaks_across_blocks\nok    test_chunked_matches_full\nok    test_block_mask_matches_dense\nok    test_clocks_agree_on_video_only\nok    test_av_clock_orders_audio\nok    test_av_clock_composes_across_blocks\nok    test_cache_holds_post_rope_keys\nok    test_cache_bytes_scale_with_rows\nok    test_window_holds_the_cache_flat_vs_length\nok    test_keep_audio_windows_video_only\nok    test_wide_window_is_the_unbounded_cache\nok    test_layer_major_matches_chunk_major\nok    test_checkpointed_matches_dense\nok    test_encode_unmasked_is_untouched\n\n19/19 passed\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "test_scd_model.py",
+      "path": "scripts/scd/test_scd_model.py",
+      "ok": true,
+      "skipped": false,
+      "seconds": 1.276,
+      "exit_code": 0,
+      "passed": 14,
+      "failed": 0,
+      "total": 14,
+      "stdout_tail": "ok    test_weight_parity\nok    test_prefix_parity\nok    test_shared_init_blocks_are_independent\nok    test_tail_blocks_are_moved_not_copied\nok    test_more_instances_than_base\nok    test_encoder_truncated\nok    test_decode_runs_and_moves_activations\nok    test_decoder_frame_input_is_shifted\nok    test_decoder_halves_get_different_timesteps\nok    test_decoder_text_rows_are_a_prefix\nok    test_decoder_context_cannot_see_its_own_frame\nok    test_velocity_head_reads_the_noisy_timestep\nok    test_production_split\nok    test_rejects_out_of_range_split\n\n14/14 passed\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "test_scd_lora.py",
+      "path": "scripts/scd/test_scd_lora.py",
+      "ok": true,
+      "skipped": false,
+      "seconds": 1.292,
+      "exit_code": 0,
+      "passed": 12,
+      "failed": 0,
+      "total": 12,
+      "stdout_tail": "ok    test_zero_at_init\nok    test_a_trained_adapter_changes_the_output\nok    test_encoder_excludes_adaln_and_decoder_keeps_it\nok    test_names_separate_the_two_copies_of_a_shared_block\nok    test_only_adapters_train\nok    test_gradient_reaches_both_halves\nok    test_ablation_can_train_one_half\nok    test_alpha_scales_the_update\nok    test_adapter_lands_on_the_base_device\nok    test_wraps_any_linear_subclass\nok    test_adapter_params_stay_fp32_under_a_bf16_base\nok    test_lr_ratio_splits_the_two_halves_and_loses_nothing\n\n12/12 passed\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "test_phase3_train.py",
+      "path": "scripts/scd/test_phase3_train.py",
+      "ok": true,
+      "skipped": false,
+      "seconds": 3.058,
+      "exit_code": 0,
+      "passed": 10,
+      "failed": 0,
+      "total": 10,
+      "stdout_tail": "ok    test_noised_and_target_match_fizgigs_convention\nok    test_sigma_0_is_the_clean_latent\nok    test_two_stage_backward_equals_one_shot\nok    test_frames_are_freed_as_they_are_scored\nok    test_the_eval_grid_is_reproducible\nok    test_skipping_the_first_frame_scores_the_rest\nok    test_context_noise_perturbs_the_loss\nok    test_per_frame_sigma_noises_each_frame_at_its_own_level\nok    test_repeated_draws_average_rather_than_accumulate\nok    test_distinct_sigmas_cost_one_encoder_pass_and_one_pack_each\n\n10/10 passed\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "test_phase3_sample.py",
+      "path": "scripts/scd/test_phase3_sample.py",
+      "ok": true,
+      "skipped": false,
+      "seconds": 3.05,
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "total": 6,
+      "stdout_tail": "ok    test_ar_never_reads_the_ground_truth\nok    test_ar_frames_condition_on_the_generated_ones\nok    test_a_perfect_velocity_recovers_the_clip\nok    test_score_separates_a_collapse_from_a_fit\nok    test_frame_0_is_excluded_from_corr_ctx\nok    test_seeding_frame_0_does_not_leak_the_later_frames\n\n6/6 passed\n",
+      "stderr_tail": ""
+    }
+  ],
+  "check_findings": {
+    "name": "check_findings",
+    "ok": true,
+    "seconds": 0.044,
+    "exit_code": 0,
+    "errors": [],
+    "warnings": [
+      "docs/phase0_results.json: superseded by docs/phase0_validation_ondist.json \u2014 not a live result",
+      "docs/phase0_results.json: latent_t=8 is off the DiT's 5n+2 grid (2, 7, 12, ...)",
+      "docs/phase0_results.json: sigmas [0.0, 0.1, 0.25] sit below 0.5, where H3 has ~no training density \u2014 superseded run, or off-distribution",
+      "docs/phase0_validation.json: superseded by docs/phase0_validation_ondist.json \u2014 not a live result",
+      "docs/phase25_tier1.json: latent_t 12: window 12 is at least the clip length \u2014 the encoder ran unbounded here, so this row does not price the shipped configuration",
+      "docs/phase2_window_cost.json: clip sigma 0.5714285714: window 6 only evicts after the final chunk (latent_t=7, chunk_frames=1) \u2014 a control for `cache.keep`, not a measurement of what a window costs",
+      "docs/phase2_window_cost.json: clip sigma 0.9230769231: window 6 only evicts after the final chunk (latent_t=7, chunk_frames=1) \u2014 a control for `cache.keep`, not a measurement of what a window costs"
+    ],
+    "stdout_tail": "checked 16 result files, 7 ledger rows, 98 registered claims\nWARN  docs/phase0_results.json: superseded by docs/phase0_validation_ondist.json \u2014 not a live result\nWARN  docs/phase0_results.json: latent_t=8 is off the DiT's 5n+2 grid (2, 7, 12, ...)\nWARN  docs/phase0_results.json: sigmas [0.0, 0.1, 0.25] sit below 0.5, where H3 has ~no training density \u2014 superseded run, or off-distribution\nWARN  docs/phase0_validation.json: superseded by docs/phase0_validation_ondist.json \u2014 not a live result\nWARN  docs/phase25_tier1.json: latent_t 12: window 12 is at least the clip length \u2014 the encoder ran unbounded here, so this row does not price the shipped configuration\nWARN  docs/phase2_window_cost.json: clip sigma 0.5714285714: window 6 only evicts after the final chunk (latent_t=7, chunk_frames=1) \u2014 a control for `cache.keep`, not a measurement of what a window costs\nWARN  docs/phase2_window_cost.json: clip sigma 0.9230769231: window 6 only evicts after the final chunk (latent_t=7, chunk_frames=1) \u2014 a control for `cache.keep`, not a measurement of what a window costs\nok\n"
+  },
+  "tier0_bench_live": null,
+  "tier0": {
+    "path": "/home/johndpope/Documents/GitHub/MiniMax-H3/docs/tier0_results.json",
+    "device": "NVIDIA RTX PRO 4000 Blackwell",
+    "torch": "2.13.0+cu130",
+    "dtype": "bfloat16",
+    "timestamp": "2026-08-10T17:01:18",
+    "rows": [
+      {
+        "config": "512^2, T=4 (Phase 3 train)",
+        "tokens": 1024,
+        "steps": 16,
+        "speedup": 1.414,
+        "flop_model_speedup": 1.412,
+        "model_error_pct": 0.13
+      },
+      {
+        "config": "768p, 5s",
+        "tokens": 31248,
+        "steps": 16,
+        "speedup": 2.669,
+        "flop_model_speedup": 2.716,
+        "model_error_pct": 1.72
+      },
+      {
+        "config": "768p, 10s",
+        "tokens": 61488,
+        "steps": 16,
+        "speedup": 3.903,
+        "flop_model_speedup": 4.012,
+        "model_error_pct": 2.72
+      },
+      {
+        "config": "768p, 15s",
+        "tokens": 91728,
+        "steps": 16,
+        "speedup": 5.034,
+        "flop_model_speedup": 5.237,
+        "model_error_pct": 3.86
+      }
+    ],
+    "pass_kill_criterion": true
+  },
+  "tier1": {
+    "path": "/home/johndpope/Documents/GitHub/MiniMax-H3/docs/phase25_tier1.json",
+    "device": "NVIDIA RTX PRO 4000 Blackwell",
+    "encoder_depth": 30,
+    "decoder_source": [
+      0,
+      1,
+      45,
+      46,
+      47,
+      48,
+      49
+    ],
+    "window": 12,
+    "git_sha": "e18bdc8",
+    "speedups": {
+      "latent_t=12_N=8": 2.928,
+      "latent_t=12_N=16": 3.513,
+      "latent_t=12_N=30": 3.875
+    },
+    "cache_rows_by_length": [
+      12758,
+      12778,
+      12796
+    ],
+    "cache_spread_rows": 38,
+    "cache_is_flat": true,
+    "decoder_frame_ms": [
+      212.91,
+      215.84,
+      214.31
+    ],
+    "decoder_spread_pct": 1.4,
+    "pass_flat_vram_claim": true
+  },
+  "gates": {
+    "unit_tests": true,
+    "check_findings": true,
+    "tier0_live_bench": true,
+    "tier0_kill_criterion": true,
+    "tier1_flat_vram": true
+  }
+}

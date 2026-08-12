@@ -90,7 +90,11 @@ def main():
 
     for path in args.latents:
         tensors = load_file(path)
-        stem = os.path.basename(path).rsplit(".", 1)[0]
+        # Include the parent folder in the output name. Different sampling runs
+        # (e.g. lat_s50sh12/ vs latents/) all write files named pixelgraph_oracle.safetensors;
+        # if we only used that basename, later decodes would overwrite earlier mp4s.
+        parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+        stem = f"{parent}_{os.path.basename(path).rsplit('.', 1)[0]}"
         keys = ["pred", "truth"] if args.which == "both" else [args.which]
         for key in keys:
             z = tensors[key].to(args.device, dtype)

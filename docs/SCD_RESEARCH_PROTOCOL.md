@@ -85,6 +85,18 @@ verifies each against the file it cites. CI runs this on every push touching `do
 If a re-run legitimately changes a number, update the claim in the same commit as the prose. A
 failing claim check means the doc and the data disagree — it does not mean the tolerance is wrong.
 
+**Architecture gate (one command).** After changing `scripts/scd/` code contracts or the numbers
+docs quote, run:
+
+```bash
+python3 scripts/scd/validate_architecture.py          # unit tests + check_findings + headline numbers
+# or:  /workflow validate-scd-arch                    # same gate via the Grok workflow
+```
+
+It writes `docs/arch_validation_results.json` and `docs/arch_validation_report.md`. That is the
+architecture pass/fail surface (masks, split, LoRA, claims, stored Tier 0/1 speedups). It does
+**not** judge decoded pixel quality — that stays a Phase 3 sampling question.
+
 Only the largest configuration group reaches `phase0_summary.json`, so a number from any other
 group has no flat file to be cited from. Such a claim names a ledger row instead —
 `{file: docs/phase0_ledger.jsonl, row: {clip: NAME}, key: seq_len}` — and the check fails unless the
