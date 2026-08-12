@@ -1,7 +1,7 @@
 # SCD architecture validation report
 
-- **When:** 2026-08-12T01:52:21Z
-- **Git:** `ed06a2c`
+- **When:** 2026-08-12T02:43:03Z
+- **Git:** `a6fdabb`
 - **Overall:** **PASS**
 
 This report answers: *is the SCD (Separable Causal Diffusion) split still correct, consistent, and as fast as we measured?* It is not a quality check for decoded video pixels.
@@ -10,11 +10,11 @@ This report answers: *is the SCD (Separable Causal Diffusion) split still correc
 
 | Suite | Result | Cases | Time |
 |-------|--------|-------|------|
-| `test_scd_attention.py` | PASS | 19/19 | 6.398s |
-| `test_scd_model.py` | PASS | 14/14 | 1.276s |
-| `test_scd_lora.py` | PASS | 12/12 | 1.292s |
-| `test_phase3_train.py` | PASS | 10/10 | 3.058s |
-| `test_phase3_sample.py` | PASS | 6/6 | 3.05s |
+| `test_scd_attention.py` | PASS | 19/19 | 6.28s |
+| `test_scd_model.py` | PASS | 14/14 | 1.314s |
+| `test_scd_lora.py` | PASS | 12/12 | 1.256s |
+| `test_phase3_train.py` | PASS | 10/10 | 2.643s |
+| `test_phase3_sample.py` | PASS | 6/6 | 2.597s |
 
 ## 2. Recorded measurements & claims
 
