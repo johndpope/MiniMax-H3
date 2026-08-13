@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """1-hour SCD distill race: velocity (trajectory) vs feature anchors.
 
-Both arms warm-start from the same LoRA, train on a shared offline teacher cache
-(see precompute_teacher.py), log losses + reconstructed frames to wandb.
+Uses offline teacher cache (precompute_teacher.py) — no live stock H3.
 
-  arm=velocity  — L = MSE(v_scd, v_teacher)          # path distill
-  arm=anchors   — L = (1-cos) on h29/h49 + small FM  # repr-align style
+Defaults tuned for 24 GB (rank-16 full LoRA OOMed by step ~80):
+  * rank 8
+  * decoder-only LoRA (encoder frozen, encode under no_grad)
+  * one random frame per step
+
+  arm=velocity  — L = MSE(v_scd, v_teacher)          # best bet for pixels
+  arm=anchors   — L = (1-cos) on decoder feat + FM   # secondary
 
 Usage:
     python3 phase3_race.py --arm velocity --minutes 55 --wandb h3-scd-race \\
-        --cache runs/teacher_cache.pt --init-lora runs/scd_v2/scd_lora_002500.safetensors \\
+        --cache runs/teacher_cache.pt \\
         --checkpoint /path/to/FL2VA/transformer --out runs/race_velocity
 """
 
@@ -35,26 +39,34 @@ from scd_model import DEFAULT_DECODER_SOURCE, DEFAULT_ENCODER_DEPTH, MiniMaxH3SC
 
 
 def student_one_frame(scd, mm, x0, text, noised, sigma, frame, *, window, chunk_frames,
-                      need_feats=False):
-    """SCD velocity for ONE frame with two-stage backward (encode leaf cut).
+                      need_feats=False, decoder_only=True):
+    """SCD velocity for ONE frame.
 
-    Same memory pattern as phase3_train.step_backward: encode → detach leaf → decode →
-    backward on leaf → replay encode. Peak holds one decoder graph, not encode+decode forever.
+    When `decoder_only` (default), the encoder has no LoRA: run it under no_grad and only
+    backprop the decoder. That is what fits 24 GB for this race.
     """
     device = x0.device
     s = float(sigma)
-    enc, clean_ctx, _ = scd.encode_chunked(
-        chunk_frames, window=window, layer_major=True, keep_audio=True, checkpoint=True,
-        video_latent=x0, t=torch.tensor([1.0], device=device), text_embeds=text)
-    spans = scd.spans(x0, enc.shape[0])
-    leaf = enc.detach().requires_grad_(True)
+    if decoder_only:
+        with torch.no_grad():
+            enc, clean_ctx, _ = scd.encode_chunked(
+                chunk_frames, window=window, layer_major=True, keep_audio=True,
+                checkpoint=False,
+                video_latent=x0, t=torch.tensor([1.0], device=device), text_embeds=text)
+        enc = enc.detach()
+    else:
+        enc, clean_ctx, _ = scd.encode_chunked(
+            chunk_frames, window=window, layer_major=True, keep_audio=True, checkpoint=True,
+            video_latent=x0, t=torch.tensor([1.0], device=device), text_embeds=text)
+        enc = enc.detach().requires_grad_(True)
 
+    spans = scd.spans(x0, enc.shape[0])
     noisy_h, noisy_ctx, _pack = scd.preamble(
         video_latent=noised, t=torch.tensor([1.0 - s], device=device), text_embeds=text)
     ph, pw = scd.base.patch_size[1], scd.base.patch_size[2]
     h, w = x0.shape[3] // ph, x0.shape[4] // pw
 
-    x_in, ctx = scd.decoder_frame_input(leaf, clean_ctx, noisy_h, noisy_ctx, spans, frame,
+    x_in, ctx = scd.decoder_frame_input(enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
                                         media_start=None, duplicate_pos=True)
     x = x_in
     for block in scd.decoder_blocks:
@@ -72,41 +84,9 @@ def student_one_frame(scd, mm, x0, text, noised, sigma, frame, *, window, chunk_
     if need_feats:
         lo = spans.video_start
         n = spans.latent_t * spans.frame_rows
-        # leaf for encoder align so grads reach the cut; enc path restored in backward
-        enc_mean = leaf[lo:lo + n].float().mean(0)
+        enc_mean = enc[lo:lo + n].float().mean(0).detach()  # frozen encoder
         dec_mean = out.float().mean(0)
-    return v, enc_mean, dec_mean, enc, leaf
-
-
-def load_init(scd, path, rank):
-    if not path:
-        return
-    from safetensors import safe_open
-    with safe_open(path, framework="pt") as f:
-        meta = f.metadata() or {}
-        sd = {k: f.get_tensor(k) for k in f.keys()}
-    file_rank = int(meta.get("rank") or next(
-        sd[k].shape[0] for k in sd if k.endswith("lora_down.weight")))
-    if file_rank != rank:
-        raise SystemExit(f"init rank {file_rank} != {rank}")
-    made = {n: m for n, m in scd.named_modules() if hasattr(m, "lora_down")}
-    # walk via add_lora result instead
-    from scd_lora import add_lora as _al
-    # adapters already installed; fill weights
-    for name, mod in scd.named_modules():
-        if not hasattr(mod, "lora_down"):
-            continue
-        # lora_name attribute
-        key = getattr(mod, "lora_name", None)
-        if key is None:
-            continue
-        for part in ("lora_down", "lora_up"):
-            wkey = f"{key}.{part}.weight"
-            if wkey in sd:
-                getattr(mod, part).weight.data.copy_(
-                    sd[wkey].to(device=getattr(mod, part).weight.device,
-                                dtype=getattr(mod, part).weight.dtype))
-    print(f"init-lora   : {path} step={meta.get('step')}", flush=True)
+    return v, enc_mean, dec_mean
 
 
 def main():
@@ -119,8 +99,12 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--minutes", type=float, default=55.0)
     ap.add_argument("--lr", type=float, default=5e-5)
-    ap.add_argument("--rank", type=int, default=16,
-                    help="16 fits the race on 24 GB; 32 climbs into OOM by ~step 30")
+    ap.add_argument("--rank", type=int, default=8,
+                    help="decoder-only rank 8 — fits 24 GB for the race")
+    ap.add_argument("--decoder-only", action="store_true", default=True,
+                    help="LoRA only on decoder half; encode under no_grad (default on)")
+    ap.add_argument("--full-lora", action="store_true",
+                    help="also wrap encoder adapters (uses more VRAM)")
     ap.add_argument("--window", type=int, default=12)
     ap.add_argument("--chunk-frames", type=int, default=1)
     ap.add_argument("--fm-weight", type=float, default=0.15,
@@ -156,25 +140,39 @@ def main():
     scd = MiniMaxH3SCD(base, encoder_depth=DEFAULT_ENCODER_DEPTH,
                        decoder_source=DEFAULT_DECODER_SOURCE)
     scd.eval()
-    made = add_lora(scd, rank=args.rank, alpha=args.rank)
+    decoder_only = not args.full_lora
+    if decoder_only:
+        made = add_lora(scd, rank=args.rank, alpha=args.rank,
+                        encoder_blocks=(), decoder_slots=range(len(scd.decoder_blocks)))
+        print(f"lora        : DECODER-ONLY  {len(made)} modules, rank {args.rank}", flush=True)
+    else:
+        made = add_lora(scd, rank=args.rank, alpha=args.rank)
+        print(f"lora        : full split  {len(made)} modules, rank {args.rank}", flush=True)
     n_mod, n_par = lora_report(made)
-    print(f"lora        : {n_mod} modules, {n_par/1e6:.2f}M rank {args.rank}", flush=True)
+    print(f"            : {n_mod} adapters, {n_par/1e6:.2f}M trainable", flush=True)
     if args.init_lora and os.path.isfile(args.init_lora):
-        # fill from file
         from safetensors import safe_open
         with safe_open(args.init_lora, framework="pt") as f:
             meta = f.metadata() or {}
             sd = {k: f.get_tensor(k) for k in f.keys()}
+        n_loaded = 0
         for name, mod in made.items():
+            key_d = f"{name}.lora_down.weight"
+            if key_d not in sd:
+                continue
             for part in ("lora_down", "lora_up"):
                 getattr(mod, part).weight.data.copy_(
                     sd[f"{name}.{part}.weight"].to(
                         device=getattr(mod, part).weight.device,
                         dtype=getattr(mod, part).weight.dtype))
-        print(f"init-lora   : {args.init_lora} step={meta.get('step')}", flush=True)
+            n_loaded += 1
+        print(f"init-lora   : {args.init_lora} loaded {n_loaded}/{len(made)} "
+              f"(step {meta.get('step')})", flush=True)
 
-    groups = lora_param_groups(scd, args.lr, decoder_ratio=2.0)
-    opt = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0.0)
+    # decoder-only: single param group
+    params = lora_parameters(scd)
+    opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
+    print(f"opt         : {len(params)} tensors  lr={args.lr:.2e}", flush=True)
     os.makedirs(args.out, exist_ok=True)
 
     wb = None
@@ -209,10 +207,11 @@ def main():
         frame = int(torch.randint(0, latent_t, (1,), generator=rng).item())
 
         opt.zero_grad(set_to_none=True)
-        v_s, enc_mean, dec_mean, enc, leaf = student_one_frame(
+        v_s, enc_mean, dec_mean = student_one_frame(
             scd, mm, x0, text, noised, sigma, frame,
             window=args.window, chunk_frames=args.chunk_frames,
-            need_feats=(args.arm == "anchors"))
+            need_feats=(args.arm == "anchors"),
+            decoder_only=decoder_only)
 
         parts = {}
         v_t_f = v_t[:, :, frame:frame + 1]
@@ -221,10 +220,8 @@ def main():
             loss = loss_v
             parts = {"loss_v": float(loss_v.detach()), "frame": frame}
         else:
+            # Decoder-only: h29 (encoder) is frozen — only h49 + FM train.
             loss_a = v_s.new_zeros(())
-            if h29 is not None and enc_mean is not None:
-                c = F.cosine_similarity(enc_mean.unsqueeze(0), h29.unsqueeze(0))
-                loss_a = loss_a + (1.0 - c).mean()
             if h49 is not None and dec_mean is not None:
                 c = F.cosine_similarity(dec_mean.unsqueeze(0), h49.unsqueeze(0))
                 loss_a = loss_a + (1.0 - c).mean()
@@ -235,10 +232,7 @@ def main():
             parts = {"loss_a": float(loss_a.detach()), "loss_fm": float(loss_fm.detach()),
                      "frame": frame}
 
-        # Decoder (+ leaf) first, then re-run encoder grads — frees the decoder graph early.
         loss.backward()
-        if leaf.grad is not None:
-            enc.backward(leaf.grad)
         gnorm = torch.nn.utils.clip_grad_norm_(lora_parameters(scd), 1.0)
         opt.step()
 
@@ -246,8 +240,7 @@ def main():
         losses.append(lv)
         peak = torch.cuda.max_memory_allocated() / 2**30
         torch.cuda.reset_peak_memory_stats()
-        # Drop step tensors; fragmentation climbed 16.7→18.1 GB then OOMed without this.
-        del v_s, enc, leaf, loss, noised, x0, text, noise, v_t
+        del v_s, loss, noised, x0, text, noise, v_t
         if step % 5 == 0:
             torch.cuda.empty_cache()
 
@@ -268,9 +261,10 @@ def main():
                 noise_p = torch.randn_like(x)
                 s_p = 0.5
                 no = ((1 - s_p) * x + s_p * noise_p).to(torch.bfloat16)
-                v_p, _, _, _, _ = student_one_frame(
+                v_p, _, _ = student_one_frame(
                     scd, mm, x, te, no, s_p, frame=1,
-                    window=args.window, chunk_frames=args.chunk_frames, need_feats=False)
+                    window=args.window, chunk_frames=args.chunk_frames, need_feats=False,
+                    decoder_only=decoder_only)
                 mse = F.mse_loss(v_p, (x - noise_p).float()[:, :, 1:2]).item()
                 wb.log({"preview/mse_to_gt_v": mse}, step=step)
 
