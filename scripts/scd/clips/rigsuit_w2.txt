@@ -1,0 +1,6 @@
+# Second temporal window of `rigsuit` (start=2.5s). Text embedding is a copy of rigsuit_te — same Context-IR prompt.
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a shot begins wide on a male character standing in a neutral T-pose against a plain light grey chequered backdrop above a flat grey floor. He has short brown hair and wears a dark navy two-piece suit, a white shirt and a navy tie, drawn in chunky pixels with heavy black outlines. The camera pushes in with large amplitude at fast speed, closing from a full-body framing to a chest-up framing so that his head fills the upper half of the frame and his outstretched arms leave the sides of the shot. As the camera closes, his arms lower from horizontal toward his sides, his shoulders turn very slightly toward the lens, and his facial features gain pixel detail while his expression stays neutral with the mouth closed. The backdrop stays plain and unlit and the floor line drops out of frame as the move completes.
+
+overall_soundscape: A flat digital room tone with no ambience or reverb. A faint low whoosh rises and falls with the camera move.
+
+non_diegetic_music: N/A

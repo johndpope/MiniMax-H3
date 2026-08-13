@@ -1,0 +1,6 @@
+# Second temporal window of `isogallery` (start=2.5s). Text embedding is a copy of isogallery_te — same Context-IR prompt.
+integrated_multimodal_description: [Shot 1] 3D CG, photorealistic miniature, a wide arcing shot moves through a marble gallery hall rendered as a tilt-shift diorama. Tall arched windows along the right side glow with a burning orange sky, pale stone statues stand on plinths between the columns, and iron wall sconces cast small warm pools of light across the polished floor. Two small figures stand near the centre of the hall: a stocky bearded man in a red and brown tunic on the left with his face tilted upward, and a taller figure in a dark wide-brimmed hat and a long dark cloak on the right, one arm extended forward toward him. Loose orange leaves lie scattered over the floor. The camera arcs to the right at slow speed, sliding a blurred foreground figure across the bottom of the frame while the two central figures rotate toward the middle of the shot and the window arches sweep past behind them.
+
+overall_soundscape: A large stone hall reverberates with a low hollow ambience and the faint crackle of open flame. Cloth shifts and a light footstep echoes across the polished floor.
+
+non_diegetic_music: Sustained low strings at a slow tempo joined by a single struck bell that decays across the shot.

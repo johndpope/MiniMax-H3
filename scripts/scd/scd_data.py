@@ -20,6 +20,8 @@ Three things about this set that a training run has to know and cannot see from 
   * `isodiorama640` is the SAME source video and a byte-identical prompt as `isodiorama`, encoded
     at 640x640 as Phase 0's geometry control. As training data it is a near-duplicate at a
     different frame_rows, so it is excluded by default — `include_control=True` puts it back.
+  * `*_w2` rows are a second temporal window of the base clip (start=2.5s). Same text embedding,
+    different frames — doubles the set without reloading the 32B text encoder.
   * There is no audio. The clips carry video latents only; the base draws its own noise rows for
     the audio segment. Every audio-side claim in this repo is measured on noise (see the design
     doc's audio-correlation subsection) and a train loop here does not change that.

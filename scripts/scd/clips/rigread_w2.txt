@@ -1,0 +1,6 @@
+# Second temporal window of `rigread` (start=2.5s). Text embedding is a copy of rigread_te — same Context-IR prompt.
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a static side-on shot frames an adventurer character on a plain white background with no floor, horizon or shadow. He wears a brown wide-brimmed felt hat, a worn brown leather jacket over a pale shirt, cream trousers and dark boots, with a coiled item hanging at his left hip, all drawn in chunky pixels. The camera holds still at a fixed focal length and the character stays centred. He begins standing upright facing left, then leans forward from the waist until his torso is angled well past forty-five degrees, bringing both hands up in front of his chest with the palms turned upward and the fingers curled. His head tips down to follow his hands and the brim of the hat hides his eyes. A small pale rectangular book appears between his palms and opens flat, and he holds the lean with his weight on his front foot, looking down at the open pages.
+
+overall_soundscape: A silent white void with no room tone or ambience. Leather creaks softly as he leans and stiff paper rustles once as the book opens.
+
+non_diegetic_music: N/A

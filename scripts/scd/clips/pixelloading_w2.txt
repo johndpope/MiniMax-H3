@@ -1,0 +1,6 @@
+# Second temporal window of `pixelloading` (start=2.5s). Text embedding is a copy of pixelloading_te — same Context-IR prompt.
+integrated_multimodal_description: [Shot 1] 2D-animated, pixel art, a static vertical shot presents a game loading screen laid over a night city street. In the background, dark blue gothic towers with scattered warm yellow windows rise against a faint starfield. A large unlit black silhouette of a head and shoulders fills the centre of the frame. In the lower left a yellow taxi with a chequered stripe is parked facing left with its rear brake light glowing red, and a yellow diamond pedestrian-crossing sign stands on a post to the right of it. White pixel text reading "PREPARING NEXT DILEMMA" is stacked on three lines across the middle of the frame, and below that the word "LOADING" sits above a rectangular progress bar. The camera holds completely still at a fixed focal length while the bar fills from left to right with solid blue segments, gaining roughly one segment at a time, and the distant window lights flicker faintly.
+
+overall_soundscape: A low synthetic drone holds under a quiet street ambience with no traffic movement. Short soft blips mark each segment as the progress bar advances.
+
+non_diegetic_music: A slow pulsing bass synthesizer with a sparse two-note motif repeating over it at a steady tempo.

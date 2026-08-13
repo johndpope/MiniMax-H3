@@ -1,0 +1,6 @@
+# Second temporal window of `isostreet` (start=2.5s). Text embedding is a copy of isostreet_te — same Context-IR prompt.
+integrated_multimodal_description: [Shot 1] 3D CG, photorealistic miniature, a high isometric shot looks down on the corner of a narrow Japanese street built as a tilt-shift diorama. A dark timber building with a slate roof and a shuttered window occupies the left half of the frame; a small restaurant with a green fabric awning bearing white characters reading "寿司" and a lit glass display case fills the right. A man in a pale short-sleeved shirt and dark trousers stands on the pavement facing a blackboard mounted on the timber wall, his right arm raised above his head toward the top of the board and his left arm at his side. The camera arcs to the right with small amplitude at slow speed around the corner of the building, shifting the angle so the restaurant frontage opens up and the man's raised arm travels across the face of the board. Overcast daylight keeps the shadows soft and the depth of field stays shallow at the top and bottom of the frame.
+
+overall_soundscape: A quiet overcast street ambience with distant muffled traffic and no wind. Chalk scrapes intermittently against the blackboard and a shoe shifts on wet pavement.
+
+non_diegetic_music: N/A

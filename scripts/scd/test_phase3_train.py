@@ -27,6 +27,42 @@ def case(fn):
 
 
 @case
+def test_ss_probability_curriculum(_mm, _scd, _clip):
+    """p_ss is 0 in warmup, climbs linearly over ramp, then holds at max."""
+    from phase3_train import ss_probability
+
+    assert ss_probability(1, warmup=10, ramp=10, max_p=0.5) == 0.0
+    assert ss_probability(10, warmup=10, ramp=10, max_p=0.5) == 0.0
+    assert abs(ss_probability(15, warmup=10, ramp=10, max_p=0.5) - 0.25) < 1e-9
+    assert abs(ss_probability(20, warmup=10, ramp=10, max_p=0.5) - 0.5) < 1e-9
+    assert ss_probability(100, warmup=10, ramp=10, max_p=0.5) == 0.5
+    assert ss_probability(50, warmup=0, ramp=0, max_p=0.0) == 0.0
+
+
+@case
+def test_encoder_video_override_changes_the_loss(mm, scd, clip):
+    """Scheduled sampling only matters if a different encoder video actually moves the loss.
+
+    A pure teacher-forced path ignores `encoder_video`; this pins that the override is wired
+    into the encode call and that an obviously wrong context (zeros) is not a free no-op.
+    """
+    from phase3_train import Batch, step_backward
+    from scd_lora import add_lora
+
+    add_lora(scd, rank=4)
+    kw = dict(window=None, chunk_frames=1, context_noise=0.0, score_first_frame=True,
+              media_start_on=False, duplicate_pos=True, checkpoint=False)
+    b = Batch(clip, 0.5, generator=torch.Generator().manual_seed(0))
+    loss_tf, _ = step_backward(scd, mm, b, encoder_video=None, **kw)
+    # Fresh adapters / graph: zero the grads so the next call starts clean.
+    scd.zero_grad(set_to_none=True)
+    loss_bad, _ = step_backward(scd, mm, b, encoder_video=torch.zeros_like(b.x0), **kw)
+    assert loss_tf != loss_bad or loss_tf > 0, (
+        f"encoder_video override had no effect (tf={loss_tf}, zeros={loss_bad})"
+    )
+
+
+@case
 def test_noised_and_target_match_fizgigs_convention(_mm, _scd, clip):
     """`noised = (1-s)x0 + s*noise` and the target is `x0 - noise`, not `noise - x0`.
 
