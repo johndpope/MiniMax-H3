@@ -157,7 +157,7 @@ def main():
                         dtype=getattr(mod, part).weight.dtype))
         print(f"init-lora   : {args.init_lora} step={meta.get('step')}", flush=True)
 
-    groups = lora_param_groups(scd, args.lr, decoder_lr_ratio=2.0)
+    groups = lora_param_groups(scd, args.lr, decoder_ratio=2.0)
     opt = torch.optim.AdamW(groups, lr=args.lr, weight_decay=0.0)
     os.makedirs(args.out, exist_ok=True)
 
