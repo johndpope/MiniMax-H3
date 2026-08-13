@@ -34,33 +34,48 @@ from scd_lora import add_lora, lora_param_groups, lora_parameters, lora_report, 
 from scd_model import DEFAULT_DECODER_SOURCE, DEFAULT_ENCODER_DEPTH, MiniMaxH3SCD  # noqa: E402
 
 
-def student_velocities(scd, mm, x0, text, noised, sigma, *, window, chunk_frames):
-    """Per-frame SCD velocity, unpatchified to latent shape [1,C,T,H,W]."""
+def student_one_frame(scd, mm, x0, text, noised, sigma, frame, *, window, chunk_frames,
+                      need_feats=False):
+    """SCD velocity for ONE latent frame (memory-safe on 24 GB).
+
+    Full T-frame graphs OOM with rank-32 + NF4 base. One frame still trains the decoder on
+    teacher-matched velocity; we randomize `frame` each step so all times get coverage.
+    """
     device = x0.device
     s = float(sigma)
+    # Checkpoint encoder so only current decoder frame holds a live graph.
     enc, clean_ctx, _ = scd.encode_chunked(
         chunk_frames, window=window, layer_major=True, keep_audio=True, checkpoint=True,
         video_latent=x0, t=torch.tensor([1.0], device=device), text_embeds=text)
     spans = scd.spans(x0, enc.shape[0])
-    r = spans.frame_rows
-    noisy_h, noisy_ctx, pack = scd.preamble(
+    noisy_h, noisy_ctx, _pack = scd.preamble(
         video_latent=noised, t=torch.tensor([1.0 - s], device=device), text_embeds=text)
     ph, pw = scd.base.patch_size[1], scd.base.patch_size[2]
     h, w = x0.shape[3] // ph, x0.shape[4] // pw
-    parts = []
-    enc_mean = enc.float().mean(0)  # crude whole-seq mean; ok as global anchor proxy
-    dec_means = []
-    for f in range(spans.latent_t):
-        # residual before velocity head
-        x_rows = scd.decode_frame(enc, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=False,
-                                  media_start=None, duplicate_pos=True)
-        dec_means.append(x_rows.float().mean(0))
-        v_patch = scd.decode_frame(enc, clean_ctx, noisy_h, noisy_ctx, spans, f, velocity=True,
-                                   media_start=None, duplicate_pos=True)
-        parts.append(mm.unpatchify_video(v_patch.float(), 1, h, w, c=x0.shape[1],
-                                         patch_size=scd.base.patch_size))
-    v = torch.cat(parts, dim=2)  # [1,C,T,H,W]
-    dec_mean = torch.stack(dec_means, 0).mean(0)
+
+    # Single decoder pass: residual then velocity head (no double decode_frame).
+    x_in, ctx = scd.decoder_frame_input(enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
+                                        media_start=None, duplicate_pos=True)
+    x = x_in
+    for block in scd.decoder_blocks:
+        x = block(x, *ctx)
+    r = spans.frame_rows
+    out = x[-r:]
+    t_emb, mod = ctx[0], ctx[1]
+    import sys as _sys
+    mm_mod = _sys.modules[type(scd.base).__module__]
+    v_patch = scd.base.final_layer(out, t_emb, int(mod[-1]) // mm_mod.MODALITY_NUM)
+    v = mm.unpatchify_video(v_patch.float(), 1, h, w, c=x0.shape[1],
+                            patch_size=scd.base.patch_size)
+
+    enc_mean = dec_mean = None
+    if need_feats:
+        # Detach encoder mean for align (still has grad path via enc if we don't detach —
+        # keep grad so LoRA encoder learns). Mean over video rows only.
+        lo = spans.video_start
+        n = spans.latent_t * spans.frame_rows
+        enc_mean = enc[lo:lo + n].float().mean(0)
+        dec_mean = out.float().mean(0)
     return v, enc_mean, dec_mean
 
 
@@ -188,31 +203,37 @@ def main():
         h29 = rec["h29"].float().to(device) if rec.get("h29") is not None else None
         h49 = rec["h49"].float().to(device) if rec.get("h49") is not None else None
 
+        # One random frame — full-T graphs OOM on 24 GB with rank-32.
+        latent_t = x0.shape[2]
+        frame = int(torch.randint(0, latent_t, (1,), generator=rng).item())
+
         opt.zero_grad(set_to_none=True)
-        v_s, enc_mean, dec_mean = student_velocities(
-            scd, mm, x0, text, noised, sigma,
-            window=args.window, chunk_frames=args.chunk_frames)
+        v_s, enc_mean, dec_mean = student_one_frame(
+            scd, mm, x0, text, noised, sigma, frame,
+            window=args.window, chunk_frames=args.chunk_frames,
+            need_feats=(args.arm == "anchors"))
 
         parts = {}
+        # Teacher / GT slice for this frame only.
+        v_t_f = v_t[:, :, frame:frame + 1]
         if args.arm == "velocity":
-            loss_v = F.mse_loss(v_s.float(), v_t)
+            loss_v = F.mse_loss(v_s.float(), v_t_f)
             loss = loss_v
-            parts = {"loss_v": float(loss_v.detach())}
+            parts = {"loss_v": float(loss_v.detach()), "frame": frame}
         else:
-            # anchors: pull SCD features toward teacher means + light FM
             loss_a = v_s.new_zeros(())
-            if h29 is not None:
-                # enc_mean is whole-seq; teacher h29 is video-mean — still a useful direction
+            if h29 is not None and enc_mean is not None:
                 c = F.cosine_similarity(enc_mean.unsqueeze(0), h29.unsqueeze(0))
                 loss_a = loss_a + (1.0 - c).mean()
-            if h49 is not None:
+            if h49 is not None and dec_mean is not None:
                 c = F.cosine_similarity(dec_mean.unsqueeze(0), h49.unsqueeze(0))
                 loss_a = loss_a + (1.0 - c).mean()
-            target = (x0 - noise).float()
-            loss_fm = F.mse_loss(v_s.float(), target)
+            target_f = (x0 - noise).float()[:, :, frame:frame + 1]
+            loss_fm = F.mse_loss(v_s.float(), target_f)
             w = float(args.fm_weight)
             loss = (1.0 - w) * loss_a + w * loss_fm
-            parts = {"loss_a": float(loss_a.detach()), "loss_fm": float(loss_fm.detach())}
+            parts = {"loss_a": float(loss_a.detach()), "loss_fm": float(loss_fm.detach()),
+                     "frame": frame}
 
         loss.backward()
         gnorm = torch.nn.utils.clip_grad_norm_(lora_parameters(scd), 1.0)
@@ -233,22 +254,17 @@ def main():
                         "sigma": sigma, "step": step, **parts}, step=step)
 
         if step % args.preview_every == 0 and wb:
-            # cheap latent score on pixelgraph without full multi-step sample
             with torch.no_grad():
                 pg = clip_bank.get("pixelgraph") or clip_bank[rec["clip"]]
                 x = pg["video_latent"].float().to(device)
                 te = pg["text_embeds"].to(device)
-                # one sigma mid
                 noise_p = torch.randn_like(x)
                 s_p = 0.5
                 no = ((1 - s_p) * x + s_p * noise_p).to(torch.bfloat16)
-                v_p, _, _ = student_velocities(scd, mm, x, te, no, s_p,
-                                               window=args.window, chunk_frames=args.chunk_frames)
-                # reconstruct x0_hat ≈ noised + s * ?  With v=x0-noise: x0 = noised + s*(noise? )
-                # noised = (1-s)x0 + s noise, v = x0 - noise
-                # x0 = noised + s * (noise? from v: noise = x0 - v => ...)
-                # x0 = noised + s * noise, noise = x0 - v => messy. Just log ||v|| and mse to (x0-noise)
-                mse = F.mse_loss(v_p, (x - noise_p).float()).item()
+                v_p, _, _ = student_one_frame(
+                    scd, mm, x, te, no, s_p, frame=1,
+                    window=args.window, chunk_frames=args.chunk_frames, need_feats=False)
+                mse = F.mse_loss(v_p, (x - noise_p).float()[:, :, 1:2]).item()
                 wb.log({"preview/mse_to_gt_v": mse}, step=step)
 
     # save
