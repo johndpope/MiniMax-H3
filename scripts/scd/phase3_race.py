@@ -36,25 +36,25 @@ from scd_model import DEFAULT_DECODER_SOURCE, DEFAULT_ENCODER_DEPTH, MiniMaxH3SC
 
 def student_one_frame(scd, mm, x0, text, noised, sigma, frame, *, window, chunk_frames,
                       need_feats=False):
-    """SCD velocity for ONE latent frame (memory-safe on 24 GB).
+    """SCD velocity for ONE frame with two-stage backward (encode leaf cut).
 
-    Full T-frame graphs OOM with rank-32 + NF4 base. One frame still trains the decoder on
-    teacher-matched velocity; we randomize `frame` each step so all times get coverage.
+    Same memory pattern as phase3_train.step_backward: encode → detach leaf → decode →
+    backward on leaf → replay encode. Peak holds one decoder graph, not encode+decode forever.
     """
     device = x0.device
     s = float(sigma)
-    # Checkpoint encoder so only current decoder frame holds a live graph.
     enc, clean_ctx, _ = scd.encode_chunked(
         chunk_frames, window=window, layer_major=True, keep_audio=True, checkpoint=True,
         video_latent=x0, t=torch.tensor([1.0], device=device), text_embeds=text)
     spans = scd.spans(x0, enc.shape[0])
+    leaf = enc.detach().requires_grad_(True)
+
     noisy_h, noisy_ctx, _pack = scd.preamble(
         video_latent=noised, t=torch.tensor([1.0 - s], device=device), text_embeds=text)
     ph, pw = scd.base.patch_size[1], scd.base.patch_size[2]
     h, w = x0.shape[3] // ph, x0.shape[4] // pw
 
-    # Single decoder pass: residual then velocity head (no double decode_frame).
-    x_in, ctx = scd.decoder_frame_input(enc, clean_ctx, noisy_h, noisy_ctx, spans, frame,
+    x_in, ctx = scd.decoder_frame_input(leaf, clean_ctx, noisy_h, noisy_ctx, spans, frame,
                                         media_start=None, duplicate_pos=True)
     x = x_in
     for block in scd.decoder_blocks:
@@ -70,13 +70,12 @@ def student_one_frame(scd, mm, x0, text, noised, sigma, frame, *, window, chunk_
 
     enc_mean = dec_mean = None
     if need_feats:
-        # Detach encoder mean for align (still has grad path via enc if we don't detach —
-        # keep grad so LoRA encoder learns). Mean over video rows only.
         lo = spans.video_start
         n = spans.latent_t * spans.frame_rows
-        enc_mean = enc[lo:lo + n].float().mean(0)
+        # leaf for encoder align so grads reach the cut; enc path restored in backward
+        enc_mean = leaf[lo:lo + n].float().mean(0)
         dec_mean = out.float().mean(0)
-    return v, enc_mean, dec_mean
+    return v, enc_mean, dec_mean, enc, leaf
 
 
 def load_init(scd, path, rank):
@@ -115,11 +114,13 @@ def main():
     ap.add_argument("--arm", required=True, choices=["velocity", "anchors"])
     ap.add_argument("--cache", default="runs/teacher_cache.pt")
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--init-lora", default="runs/scd_v2/scd_lora_002500.safetensors")
+    ap.add_argument("--init-lora", default="",
+                    help="optional warm-start; rank must match --rank")
     ap.add_argument("--out", required=True)
     ap.add_argument("--minutes", type=float, default=55.0)
     ap.add_argument("--lr", type=float, default=5e-5)
-    ap.add_argument("--rank", type=int, default=32)
+    ap.add_argument("--rank", type=int, default=16,
+                    help="16 fits the race on 24 GB; 32 climbs into OOM by ~step 30")
     ap.add_argument("--window", type=int, default=12)
     ap.add_argument("--chunk-frames", type=int, default=1)
     ap.add_argument("--fm-weight", type=float, default=0.15,
@@ -208,13 +209,12 @@ def main():
         frame = int(torch.randint(0, latent_t, (1,), generator=rng).item())
 
         opt.zero_grad(set_to_none=True)
-        v_s, enc_mean, dec_mean = student_one_frame(
+        v_s, enc_mean, dec_mean, enc, leaf = student_one_frame(
             scd, mm, x0, text, noised, sigma, frame,
             window=args.window, chunk_frames=args.chunk_frames,
             need_feats=(args.arm == "anchors"))
 
         parts = {}
-        # Teacher / GT slice for this frame only.
         v_t_f = v_t[:, :, frame:frame + 1]
         if args.arm == "velocity":
             loss_v = F.mse_loss(v_s.float(), v_t_f)
@@ -235,7 +235,10 @@ def main():
             parts = {"loss_a": float(loss_a.detach()), "loss_fm": float(loss_fm.detach()),
                      "frame": frame}
 
+        # Decoder (+ leaf) first, then re-run encoder grads — frees the decoder graph early.
         loss.backward()
+        if leaf.grad is not None:
+            enc.backward(leaf.grad)
         gnorm = torch.nn.utils.clip_grad_norm_(lora_parameters(scd), 1.0)
         opt.step()
 
@@ -243,6 +246,10 @@ def main():
         losses.append(lv)
         peak = torch.cuda.max_memory_allocated() / 2**30
         torch.cuda.reset_peak_memory_stats()
+        # Drop step tensors; fragmentation climbed 16.7→18.1 GB then OOMed without this.
+        del v_s, enc, leaf, loss, noised, x0, text, noise, v_t
+        if step % 5 == 0:
+            torch.cuda.empty_cache()
 
         if step % args.log_every == 0 or step == 1:
             elapsed = time.time() - t0
@@ -261,7 +268,7 @@ def main():
                 noise_p = torch.randn_like(x)
                 s_p = 0.5
                 no = ((1 - s_p) * x + s_p * noise_p).to(torch.bfloat16)
-                v_p, _, _ = student_one_frame(
+                v_p, _, _, _, _ = student_one_frame(
                     scd, mm, x, te, no, s_p, frame=1,
                     window=args.window, chunk_frames=args.chunk_frames, need_feats=False)
                 mse = F.mse_loss(v_p, (x - noise_p).float()[:, :, 1:2]).item()

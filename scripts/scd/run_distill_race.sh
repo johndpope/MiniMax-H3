@@ -18,11 +18,18 @@ echo "[$(date -Is)] cache ready ($(du -h "$CACHE" | awk '{print $1}'))" | tee -a
 run_arm() {
   local arm=$1
   echo "[$(date -Is)] START arm=$arm minutes=$MINUTES" | tee -a "$LOG"
+  # Rank 16: rank 32 climbed into OOM by ~step 30 on 24 GB even with one-frame steps.
+  # Skip init if rank mismatch (v2 is rank 32).
+  local init_args=()
+  if [[ -f "$INIT" ]]; then
+    init_args=(--init-lora "$INIT")
+  fi
+  # Only warm-start when ranks match (v2 is 32; race uses 16 for memory).
   python3 -u phase3_race.py \
     --arm "$arm" \
     --cache "$CACHE" \
     --checkpoint "$CKPT" \
-    --init-lora "$INIT" \
+    --rank 16 \
     --out "runs/race_${arm}" \
     --minutes "$MINUTES" \
     --wandb h3-scd-race \
