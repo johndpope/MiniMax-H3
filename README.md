@@ -24,6 +24,8 @@
 
 # MiniMax H3
 
+> **Local research (not upstream).** Training recreations and the VFM flywheel graph live in the sibling checkout [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · agent context [`AGENTS.md`](AGENTS.md). SCD port: `docs/`. Do not push these upstream.
+
 ## Prompt Writing Skill
 
 Install the H3 prompt writing skill — one of nine skills bundled with this repository:

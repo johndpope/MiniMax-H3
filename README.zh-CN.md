@@ -24,6 +24,8 @@
 
 # MiniMax H3
 
+> **本地研究（非上游）。** 训练复现与 VFM flywheel 图在兄弟仓库 [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · 代理上下文 [`AGENTS.md`](AGENTS.md)。SCD 移植：`docs/`。请勿将这些内容推送到上游。
+
 ## 提示词编写技能
 
 安装 H3 提示词编写技能。这是本仓库内置的九个技能之一：

@@ -12,6 +12,8 @@ H3 generates video with native 32 kHz stereo audio (4–15 s, 24 FPS, 768p by de
 
 `docs/` and `scripts/scd/` are **local additions, not upstream mirror content** — research for a Separable Causal Diffusion port of H3. `docs/MINIMAX_H3_SCD_PORT_DESIGN.md` is the live design doc; `scripts/scd/tier0_bench.py` is a weights-free microbenchmark whose results are pasted into §2.2.1 and stored in `docs/tier0_results.json`. Do not push these upstream.
 
+**VFM 1-NFE flywheel is not this repo.** It lives in the sibling checkout `MiniMax-H3-vfm`. Recreate every training stage and read the settled graph in `MiniMax-H3-vfm/scripts/vfm/README.md`. Agent rules: `AGENTS.md` (this repo) and `MiniMax-H3-vfm/AGENTS.md`. Raw DAG: `MiniMax-H3-vfm/scripts/vfm/runs/flywheel/graph.jsonl`. Precached clips used by VFM stay here under `scripts/scd/clips/`. Do not mix VFM edits into SCD, and do not push VFM files upstream.
+
 ## Two checkpoint layouts live side by side
 
 Both describe the same model; do not mix their class names or diffusers versions.

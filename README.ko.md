@@ -24,6 +24,8 @@
 
 # MiniMax H3
 
+> **로컬 연구 (업스트림 아님).** 학습 재현과 VFM 플라이휠 그래프는 형제 체크아웃 [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · 에이전트 컨텍스트 [`AGENTS.md`](AGENTS.md). SCD 포트: `docs/`. 업스트림에 푸시하지 마세요.
+
 ## 프롬프트 작성 스킬
 
 이 저장소에 포함된 아홉 개 스킬 중 하나인 H3 프롬프트 작성 스킬을 설치합니다:

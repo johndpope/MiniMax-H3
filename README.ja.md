@@ -24,6 +24,8 @@
 
 # MiniMax H3
 
+> **ローカル研究（アップストリームではない）。** 学習の再現と VFM フライホイールのグラフは兄弟チェックアウト [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · エージェント文脈 [`AGENTS.md`](AGENTS.md)。SCD ポート: `docs/`。アップストリームへは push しない。
+
 ## プロンプト作成スキル
 
 このリポジトリに同梱されている 9 つのスキルの 1 つである H3 プロンプト作成スキルをインストールします:
