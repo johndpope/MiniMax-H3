@@ -201,7 +201,7 @@ Committed in `94434ac`: everything under `scripts/lot/` except `runs/`, `.grok/w
 
 `train_synth.py` `--save-every` defaults to 0 and does not write `last.pt` unless that flag is positive. Do not relaunch the 480-minute toy run.
 
-Fizgig `model.py` is not in this repo. The splice hooks are committed in Fizgig as `b7f485f` on branch `lot-h3-splice` (pushed to `johndpope/Fizgig`), and fast-forwarded into `immiscible-h3-noise` (also pushed). Not merged to `master`; a `master` checkout has no `_lot`.
+Fizgig `model.py` is not in this repo. The splice hooks are committed in Fizgig as `b7f485f` on `immiscible-h3-noise` (pushed to `johndpope/Fizgig`). The temporary `lot-h3-splice` branch was fast-forwarded in and deleted. Not merged to `master`; a `master` checkout has no `_lot`.
 
 Do not stage `scripts/scd/`, `IMF/`, `wandb`, or `scripts/lot/runs/`.
 
