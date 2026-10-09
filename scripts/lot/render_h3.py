@@ -20,9 +20,12 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # before CUDA init
 
 import numpy as np
 import torch
@@ -112,16 +115,21 @@ def main() -> None:
     from fizgig.minimax.loader import load_minimax_h3_dit
     from fizgig.minimax.sampling import _sample_image_impl
 
-    mean = make_h3_adapter()
-    mean.init_from_pretrained(*pretrained_maps(CHECKPOINT))
-    fitted = make_h3_adapter()
-    fitted.init_from_pretrained(*pretrained_maps(CHECKPOINT))
-    reports = fit_bank(fitted, pairs)
+    # Build only what the requested variants use: each fp32 adapter is ~200 MB, and with
+    # the int8 DiT fully resident there is no room for spares.
+    wanted = {name for name in args.variants.split(",") if name}
     layout = make_layout(args.layout)
-    splices = {
-        "lot_mean": LotSplice(mean.cuda(), layout),
-        "lot_fit": LotSplice(fitted.cuda(), layout, y_space=True),
-    }
+    splices = {}
+    reports = []
+    if "lot_mean" in wanted:
+        mean = make_h3_adapter()
+        mean.init_from_pretrained(*pretrained_maps(CHECKPOINT))
+        splices["lot_mean"] = LotSplice(mean.cuda(), layout)
+    if "lot_fit" in wanted:
+        fitted = make_h3_adapter()
+        fitted.init_from_pretrained(*pretrained_maps(CHECKPOINT))
+        reports = fit_bank(fitted, pairs)
+        splices["lot_fit"] = LotSplice(fitted.cuda(), layout, y_space=True)
 
     model = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
                                 base_quant="int8", blocks_to_swap=args.swap)
@@ -136,7 +144,8 @@ def main() -> None:
 
         trained = make_h3_adapter()
         trained.load_state_dict(torch.load(args.trained / "adapter.pt", map_location="cpu", weights_only=True))
-        splices["lot_trained"] = LotSplice(trained.cuda(), layout, y_space=True)
+        if "lot_trained" in wanted:
+            splices["lot_trained"] = LotSplice(trained.cuda(), layout, y_space=True)
         network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], model,
                                  include_patterns=LORA_PATTERNS)
         network.apply_to(text_encoders=None, unet=model, apply_text_encoder=False, apply_unet=True)
@@ -184,7 +193,7 @@ def main() -> None:
     finally:
         hook.remove()
         model._lot = None
-    del model, splices, mean, fitted
+    del model, splices, network
     gc.collect()
 
     from safetensors import safe_open

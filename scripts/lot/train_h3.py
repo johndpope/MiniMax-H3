@@ -36,6 +36,8 @@ import sys
 import time
 from pathlib import Path
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # before CUDA init
+
 import torch
 import torch.nn.functional as F
 
@@ -349,9 +351,12 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]], 1.0)
-        if not math.isfinite(float(loss)):
+        if not math.isfinite(float(loss.detach())):
             raise RuntimeError(f"step {step}: loss {float(loss)}")
         optimizer.step()
+        # Free the grads now, not at the next step: evaluation and saving run between
+        # steps, and ~350 MB of live grads on top of the Adam state OOMed the step-250 eval.
+        optimizer.zero_grad(set_to_none=True)
         record = {"step": step, "loss": float(loss), "sigma": float(sigma), "kind": kind,
                   "tokens": layout.count, "dense": layout.dense_count, "grad_norm": float(grad_norm),
                   "seconds": round(time.perf_counter() - started, 1)}
