@@ -26,6 +26,8 @@
 
 > **Local research (not upstream).** Training recreations and the VFM flywheel graph live in the sibling checkout [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · agent context [`AGENTS.md`](AGENTS.md). SCD port: `docs/`. Do not push these upstream.
 
+> **Level-of-Token (LoT) on H3 — local research.** Fewer, larger DiT tokens where detail is low: 2.64× faster DiT forward on a 37-frame 768×1344 clip. Start training: [cheatsheet](scripts/lot/CHEATSHEET.md) · [full guide](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [results](https://github.com/johndpope/MiniMax-H3/issues/1). Do not push upstream.
+
 ## Prompt Writing Skill
 
 Install the H3 prompt writing skill — one of nine skills bundled with this repository:
