@@ -33,6 +33,7 @@ sys.path.insert(0, "/media/2TB/Fizgig/src")
 
 from gpu_guard import refuse_if_busy  # noqa: E402
 from h3 import clip_layout, make_h3_adapter  # noqa: E402
+from layout import TokenRect, layout_from_rects  # noqa: E402
 from h3_splice import LotSplice  # noqa: E402
 from procrustes_h3 import CHECKPOINT, fit_bank, load_pairs, pretrained_maps  # noqa: E402
 
@@ -57,6 +58,16 @@ def load_prompts(count: int) -> list[tuple[str, torch.Tensor]]:
         text = caption.read_text().strip() if caption.is_file() else stem
         prompts.append((text, hidden[mask].unsqueeze(0)))
     return prompts
+
+
+def make_layout(name: str):
+    token_h, token_w = HEIGHT // 32, WIDTH // 32
+    if name == "bands":
+        return clip_layout(1, token_h, token_w)
+    side = 2 if name == "uniform2" else 4
+    rects = [TokenRect(0, u, v, 1, side, side)
+             for u in range(0, token_h, side) for v in range(0, token_w, side)]
+    return layout_from_rects(1, token_h, token_w, rects)
 
 
 def to_image(pixels: torch.Tensor) -> Image.Image:
@@ -84,6 +95,9 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "runs" / "render")
+    parser.add_argument("--layout", choices=("bands", "uniform2", "uniform4"), default="bands",
+                        help="bands: 1x1/2x2/4x2 thirds; uniformN: every token NxN")
+    parser.add_argument("--variants", default="dense,lot_mean,lot_fit")
     args = parser.parse_args()
 
     refuse_if_busy("render_h3.py")
@@ -96,7 +110,7 @@ def main() -> None:
     fitted = make_h3_adapter()
     fitted.init_from_pretrained(*pretrained_maps(CHECKPOINT))
     reports = fit_bank(fitted, pairs)
-    layout = clip_layout(1, HEIGHT // 32, WIDTH // 32)
+    layout = make_layout(args.layout)
     splices = {
         "lot_mean": LotSplice(mean.cuda(), layout),
         "lot_fit": LotSplice(fitted.cuda(), layout, y_space=True),
@@ -109,7 +123,7 @@ def main() -> None:
     model._tread = None
 
     prompts = load_prompts(args.prompts)
-    variants = ["dense", "lot_mean", "lot_fit"]
+    variants = [name for name in args.variants.split(",") if name]
     latents: dict[tuple[int, str], torch.Tensor] = {}
     timings: dict[str, list[float]] = {name: [] for name in variants}
     seq: dict[str, tuple] = {}
@@ -162,7 +176,7 @@ def main() -> None:
     labels = [f"{name}  {medians[name]:.0f}s/img" for name in variants]
     grid(rows, labels).save(args.out / "grid.png")
     meta = {
-        "steps": args.steps, "seed": args.seed, "canvas": f"{WIDTH}x{HEIGHT}", "layout_tokens": layout.count,
+        "layout": args.layout, "steps": args.steps, "seed": args.seed, "canvas": f"{WIDTH}x{HEIGHT}", "layout_tokens": layout.count,
         "dense_tokens": layout.dense_count, "seq": {k: list(v) for k, v in seq.items()},
         "seconds_median": medians, "prompts": [text for text, _ in prompts],
         "fit": [{**r, "extent": list(r["extent"])} for r in reports],
