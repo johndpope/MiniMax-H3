@@ -193,11 +193,21 @@ diff -rq FL2VA Ref2VA    # expect only model_index.json
 
 Gate the GPU tests on `nvidia-smi` or `ps`, not on `scripts/lot/runs/day/pid`. That file still contains dead pid 2294846. `bench_h3.py`, `parity_h3.py`, and `procrustes_h3.py --smoke` call `gpu_guard.refuse_if_busy`, which refuses (never kills) when another of `train_synth.py`, `bench_h3.py`, `parity_h3.py`, `procrustes_h3.py` is running under a Python interpreter.
 
+## Phase 4 and 5 status (2026-10-10)
+
+- **Pairs:** `make_pairs_h3.py` on 538 Nikki Ref2VA stills (`h3-atlas/logs/nikki_scrya_ref2va_768x1152/*/comfy_t00.png`, 768×1152). Fine side `encode(x)`; reference `encode(resize(x, H/eh, W/ew))`. Output `scripts/lot/runs/pairs_nikki_scrya_ref2va_768x1152` (gitignored). Re-encoding `t00` vs `z[:, :, 0]`: rel RMS 0.46, corr 0.91 (lossy PNG round trip, same normalization).
+- **Fit:** all 8 extents `ok=1`, `ortho_err` ≤ 5e-8, scales 1.35 (1×2) … 1.99 (2×2) … 3.40 (4×4). Smoke `ok=1`, `seq=(972, 5376)`.
+- **VAE decode:** `LOT_H3 kind=vae_decode latent=(37,48,84) … decode_ms=31774.2 peak_mb=6701.6`. LoT does not touch the VAE.
+- **Still forwards (768×1152, one forward):** all blocks resident fits (20.2 GB weights, 20.8 GB peak). Swap 0: dense 686 ms, bands 415 ms (1.65×), all-2×2 303 ms (2.26×). Swap 32: 13.5 s dense. Each streamed block costs ~0.37–0.40 s. `render_h3.py` defaults to swap 0.
+- **Renders (frozen base):** `assets/lot-h3-render-bands.png` (1×1 band coherent, coarse bands streak) and `assets/lot-h3-render-uniform2.png` (all-2×2 with the Nikki fit gives coherent scenes; the mean lift is worse). Quality needs the fine-tune.
+- **Phase 5:** `train_h3.py` (adapter + rank-16 LoRA on qkv/out/fc1/fc2, 200 modules; AdaLN, refiner, base, bank frozen). Loss `lot_h3_clean_loss` (eq. 17 with H3's `x0 − ε` head = velocity MSE in y-space). Data `cache_iso3d` stills with cached text (777 train / 24 held out). Layouts: 20% dense, uniform, detail mosaic of 4×4 super-cells. Started 2026-10-10 by the user (`LOT_H3_TRAIN=1`, 2,000 steps, `--save-every 500`, swap 4, ~2.7 s/step, ~1 h 40 min). Log `/tmp/lot_train_h3.log`, records `scripts/lot/runs/train_h3/log.jsonl`. Step-0 held-out eval: `dense=0.5199 uniform2=0.2700 mosaic=0.3874`.
+- **After training:** `render_h3.py --pairs … --trained scripts/lot/runs/train_h3 --variants dense,dense_lora,lot_fit,lot_trained` renders held-out prompts. `dense_lora` checks base drift.
+
 ## Git
 
-Branch `lot-progress`, pushed through `94434ac` (`lot: splice LoT into the H3 DiT, fix the head sign, add phase 4`). `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
+Branch `lot-progress`, pushed through `af63e7b` and this doc update. `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
 
-Committed in `94434ac`: everything under `scripts/lot/` except `runs/`, `.grok/workflows/lot-day.rhai` (CPU sanity only; it no longer launches `train_synth.py`), `docs/LOT_H3_COMPUTE_PLAN.md`, and this handoff. Still untracked and not part of this port: `scripts/scd/*`, `IMF/`, `assets/scrya/`, `Ref2VA/Ref2VA.combined`, `lora_gauss_collapse`, `.grok/workflows/vfm-stack.rhai`, `scripts/start_wandb_tui.sh`.
+Committed: everything under `scripts/lot/` except `runs/`, the render grids under `assets/lot-h3-*.png`, `.grok/workflows/lot-day.rhai` (CPU sanity only; it no longer launches `train_synth.py`), `docs/LOT_H3_COMPUTE_PLAN.md`, and this handoff. Still untracked and not part of this port: `scripts/scd/*`, `IMF/`, `assets/scrya/`, `Ref2VA/Ref2VA.combined`, `lora_gauss_collapse`, `.grok/workflows/vfm-stack.rhai`, `scripts/start_wandb_tui.sh`.
 
 `train_synth.py` `--save-every` defaults to 0 and does not write `last.pt` unless that flag is positive. Do not relaunch the 480-minute toy run.
 
@@ -207,18 +217,18 @@ Do not stage `scripts/scd/`, `IMF/`, `wandb`, or `scripts/lot/runs/`.
 
 Earlier pushed LoT commits on the fork include `5c75a3c` (adapter and synthetic trainer), `e3db6c6` (Euler inference), `1241444` (same-seed compare), `4d65f30` (mixed grid). Unpushed SCD commit `22a4814` was reset off the branch and must not be resurrected.
 
-Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`, `6076658364` (commit `94434ac` plus the toy loss table; says no H3 images or losses exist yet). The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
+Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`, `6076658364`, `6077238907` (Fizgig commit), `6078182740` (phase-4 fit, smoke, decode), `6080008545` (band renders), `6080233526` (all-2×2 renders), `6086168608` (Q&A: VAE, timing, VRAM, quality), `6086348323` (trainer + `--check`), plus a short training-started note. The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
 
 ## What to do next
 
-1. Phase 4 is blocked on pairs, which is Open Question 1 in the compute plan: the user picks the encoder that fills the directory. When the user points at a directory: `python3 scripts/lot/procrustes_h3.py --pairs DIR`, and then `--smoke` on the GPU if the fit lines print `ok=1`. Quote the `kind=procrustes` and `kind=smoke` lines. Add `--out` only if the user asks to keep the fitted adapter.
-2. Optional: re-run `bench_h3.py` once to record `dense_retries`/`lot_retries`. If the retry count is nonzero, the 2.643 is an upper bound. Do not run it while another GPU script is alive.
-3. Phase 5 still needs `LOT_H3_TRAIN=1`. Its loss and sampler must use H3's sign: `y0_hat = y_t + σ * out`, not `flow.clean_from_velocity` (that is the `eps - x0` convention of the toy pipeline).
+1. When training exits, quote the `train_eval` lines (dense must not climb) and run the `--trained` render above. Post both to issue 1 with the grid under `assets/`.
+2. Clips: cache the 61 Nikki mp4s at 384×640, 22 frames (`minimax_cache_latents.py`, `minimax_cache_text.py`). Text caching runs Qwen in a separate process and needs the user's OK.
+3. Optional: re-run `bench_h3.py` once to record `dense_retries`/`lot_retries`.
 
 ## Hard rules, short
 
-- One GPU. No `empty_cache`. No killing other processes. No Qwen. No full bf16 H3. No `runs/day/last.pt` as weights.
+- One GPU. No `empty_cache`. No killing other processes. No Qwen without the user's OK. No full bf16 H3. No `runs/day/last.pt` as weights.
 - No SCD. No MiniMax-AI push. No commit unless asked.
-- No checkpoint writes. No activation dumps. No `forward_cached` with LoT set.
-- No invented Procrustes pairs. No fine-tune unless `LOT_H3_TRAIN=1`.
+- Checkpoints only from `train_h3.py` into `runs/` (gitignored). No activation dumps. No `forward_cached` with LoT set.
+- No invented Procrustes pairs (the Nikki pairs are real encodes). No fine-tune unless `LOT_H3_TRAIN=1`.
 - The `latent_t=37` speedup is 2.643×, measured on random tensors and before the retry counter existed. Do not quote a quality claim from it.
