@@ -195,24 +195,19 @@ Gate the GPU tests on `nvidia-smi` or `ps`, not on `scripts/lot/runs/day/pid`. T
 
 ## Git
 
-Branch `lot-progress` at `b074c46` (`lot: infer takes fixed noise and plots layouts side by side`). `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
+Branch `lot-progress`, pushed through `94434ac` (`lot: splice LoT into the H3 DiT, fix the head sign, add phase 4`). `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
 
-Uncommitted, and part of this port:
-
-- `scripts/lot/h3_splice.py`, `parity_h3.py`, `bench_h3.py`, `sanity.py`, `procrustes_h3.py`, `gpu_guard.py` (untracked)
-- edits in `scripts/lot/adapter.py` (head sign), `flow.py`, `h3.py`, `h3_positions.py`, `test_lot.py`, `train_synth.py`, `README.md`
-- `.grok/workflows/lot-day.rhai` — CPU sanity only. It no longer launches `train_synth.py`. The only remaining `train_synth` string tells the agent not to start it.
-- `docs/LOT_H3_COMPUTE_PLAN.md` and this handoff (untracked local research)
+Committed in `94434ac`: everything under `scripts/lot/` except `runs/`, `.grok/workflows/lot-day.rhai` (CPU sanity only; it no longer launches `train_synth.py`), `docs/LOT_H3_COMPUTE_PLAN.md`, and this handoff. Still untracked and not part of this port: `scripts/scd/*`, `IMF/`, `assets/scrya/`, `Ref2VA/Ref2VA.combined`, `lora_gauss_collapse`, `.grok/workflows/vfm-stack.rhai`, `scripts/start_wandb_tui.sh`.
 
 `train_synth.py` `--save-every` defaults to 0 and does not write `last.pt` unless that flag is positive. Do not relaunch the 480-minute toy run.
 
-Fizgig `model.py` is not in this repo. A commit here does not save the splice hooks.
+Fizgig `model.py` is not in this repo. The splice hooks are committed in Fizgig as `b7f485f` on branch `lot-h3-splice` (pushed to `johndpope/Fizgig`, cut from `immiscible-h3-noise` at `24597f0`; not merged to `master`). A Fizgig checkout on another branch has no `_lot`.
 
 Do not stage `scripts/scd/`, `IMF/`, `wandb`, or `scripts/lot/runs/`.
 
 Earlier pushed LoT commits on the fork include `5c75a3c` (adapter and synthetic trainer), `e3db6c6` (Euler inference), `1241444` (same-seed compare), `4d65f30` (mixed grid). Unpushed SCD commit `22a4814` was reset off the branch and must not be resurrected.
 
-Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`. The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
+Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`, `6076658364` (commit `94434ac` plus the toy loss table; says no H3 images or losses exist yet). The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
 
 ## What to do next
 
