@@ -1,0 +1,97 @@
+"""MiniMax-H3 geometry for a Level-of-Token visual stream.
+
+H3's native patch is ``(t, h, w) = (1, 2, 2)`` on 24-channel video latents,
+so the uniform token dimension is ``24 * 1 * 2 * 2 = 96``. LoT extents are
+counted in those tokens, not in latent pixels. A paper video extent of
+``2 x 2`` therefore covers a ``1 x 4 x 4`` block of VAE latents.
+
+The Wan training setup in Appendix A.10 keeps ``e_t = 1`` and draws spatial
+extents from ``{1, 2, 4}``, including rectangles. That is the H3 preset.
+"""
+
+from __future__ import annotations
+
+import itertools
+
+import torch
+
+from adapter import LotVisualAdapter
+
+
+H3_LATENT_CHANNELS = 24
+H3_PATCH = (1, 2, 2)
+H3_TOKEN_DIM = H3_LATENT_CHANNELS * H3_PATCH[0] * H3_PATCH[1] * H3_PATCH[2]
+H3_HIDDEN = 5376
+H3_HEADS = 56
+H3_HEAD_DIM = 128
+
+# Appendix A.10. Temporal extent stays 1; spatial sides are 1, 2, or 4.
+H3_SPATIAL_SIDES = (1, 2, 4)
+H3_EXTENTS = tuple((1, eh, ew) for eh, ew in itertools.product(H3_SPATIAL_SIDES, repeat=2))
+
+# Image quadtree in Appendix A.3. Squares only, up to 8.
+IMAGE_EXTENTS = ((1, 1, 1), (1, 2, 2), (1, 4, 4), (1, 8, 8))
+
+# Wan's per-frame token cap. H3 resolutions differ; this is a budget check,
+# not a hard limit of the adapter.
+WAN_MAX_TOKENS_PER_FRAME = 3072
+
+
+def patchify(latent: torch.Tensor, patch: tuple[int, int, int] = H3_PATCH) -> torch.Tensor:
+    """``(B, C, T, H, W)`` -> ``(B, T', H', W', C*pt*ph*pw)``.
+
+    Channel order inside the token is C-order ``(channel, pt, ph, pw)`` with
+    ``pw`` fastest.
+    """
+    if latent.ndim != 5:
+        raise ValueError("latent must be (B, C, T, H, W)")
+    pt, ph, pw = patch
+    batch, channels, time, height, width = latent.shape
+    if time % pt or height % ph or width % pw:
+        raise ValueError(f"latent {(time, height, width)} is not divisible by patch {patch}")
+    tt, hh, ww = time // pt, height // ph, width // pw
+    tokens = latent.reshape(batch, channels, tt, pt, hh, ph, ww, pw)
+    tokens = tokens.permute(0, 2, 4, 6, 1, 3, 5, 7)
+    return tokens.reshape(batch, tt, hh, ww, channels * pt * ph * pw)
+
+
+def unpatchify(
+    tokens: torch.Tensor,
+    patch: tuple[int, int, int] = H3_PATCH,
+    channels: int = H3_LATENT_CHANNELS,
+) -> torch.Tensor:
+    """Inverse of ``patchify``."""
+    pt, ph, pw = patch
+    if tokens.ndim != 5 or tokens.shape[-1] != channels * pt * ph * pw:
+        raise ValueError("token shape does not match channels and patch")
+    batch, tt, hh, ww, _dense = tokens.shape
+    tokens = tokens.reshape(batch, tt, hh, ww, channels, pt, ph, pw)
+    tokens = tokens.permute(0, 4, 1, 5, 2, 6, 3, 7)
+    return tokens.reshape(batch, channels, tt * pt, hh * ph, ww * pw)
+
+
+def make_h3_adapter(
+    hidden_size: int = H3_HIDDEN,
+    *,
+    include_time: bool = False,
+    shape_hidden: int = 256,
+    extents: tuple[tuple[int, int, int], ...] = H3_EXTENTS,
+) -> LotVisualAdapter:
+    """Adapter whose token dim matches H3. Weights are not loaded here."""
+    return LotVisualAdapter(
+        H3_TOKEN_DIM,
+        hidden_size,
+        list(extents),
+        include_time=include_time,
+        shape_hidden=shape_hidden,
+    )
+
+
+def tokens_per_frame(layout_count: int, time: int) -> float:
+    if time < 1:
+        raise ValueError("time must be positive")
+    return layout_count / time
+
+
+def over_wan_frame_budget(layout_count: int, time: int) -> bool:
+    return tokens_per_frame(layout_count, time) > WAN_MAX_TOKENS_PER_FRAME

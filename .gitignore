@@ -6,4 +6,5 @@ __pycache__/
 # Phase 3 training output: logs, adapters and their metadata. The adapters are gitignored by
 # the *.safetensors rule above; the logs are large, per-run and reproducible from the script.
 scripts/scd/runs/
+scripts/lot/runs/
 scripts/scd/*.log

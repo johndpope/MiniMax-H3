@@ -1,0 +1,238 @@
+"""Patch-wise asymmetric flow for Level-of-Token Diffusion.
+
+The velocity algebra is LakonLab's ``AsymFlowMixin.asymflow_velocity`` with
+scale ``s = 1`` and calibration ``k = 1``. That special case is equation 9 of
+Nakayama et al. 2026. LoT does not use AsymFlow's per-extent timestep
+calibration (eq. 18). Extent scales are applied to the clean latent instead
+(eq. 16), which keeps a single timestep for every token.
+
+LakonLab is loaded from the ``common.py`` file directly. Importing the
+``lakonlab`` package pulls in ``mmcv``, which this path does not need.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import torch
+
+from layout import LotLayout, TokenRect
+
+
+def _lakonlab_common_path() -> Path:
+    override = os.environ.get("LAKONLAB_ROOT")
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    repo = Path(__file__).resolve().parents[2]
+    candidates.append(repo.parent / "LakonLab")
+    for root in candidates:
+        path = root / "lakonlab" / "models" / "architectures" / "asymflow" / "common.py"
+        if path.is_file():
+            return path
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"LakonLab asymflow/common.py not found. Looked in: {searched}")
+
+
+@lru_cache(maxsize=1)
+def _asymflow():
+    path = _lakonlab_common_path()
+    spec = importlib.util.spec_from_file_location("lakonlab_asymflow_common", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class _VelocityKernel(module.AsymFlowMixin):
+        """One Procrustes basis, otherwise the LakonLab velocity step."""
+
+        def __init__(self, basis: torch.Tensor):
+            self.proj_buffer = basis
+            self.sigma_min = 1e-6
+            self.training = True
+
+    return module.AsymFlowCalibration, _VelocityKernel, path
+
+
+def mean_basis(token_dim: int, extent: tuple[int, int, int]) -> torch.Tensor:
+    """Semi-orthonormal lift that averages the uniform tokens inside a patch.
+
+    ``A`` has shape ``(et*eh*ew*D, D)`` and ``A^T A = I``. For a unit extent
+    this is the identity, so a dense layout is unchanged. This is the
+    stand-in used before a Procrustes fit; it is not the paper's data-fit basis.
+    """
+    et, eh, ew = extent
+    sites = et * eh * ew
+    if token_dim < 1 or sites < 1:
+        raise ValueError("token dim and extent must be positive")
+    eye = torch.eye(token_dim)
+    return eye.repeat(sites, 1) / math_sqrt(sites)
+
+
+def math_sqrt(value: int) -> float:
+    return value ** 0.5
+
+
+def fit_procrustes(dense: torch.Tensor, reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Orthogonal Procrustes basis and RMS scale, eqs. 14–15.
+
+    ``dense`` is ``(N, D_e)`` and ``reference`` is ``(N, D)``, the aligned
+    multi-scale VAE tokens. The SVD matches
+    ``LakonLab/tools/asymflow_subspace_procrustes.py``: ``A = V U^T`` from
+    ``Z^T X = U S V^T``. ``A`` is ``(D_e, D)`` with ``A^T A = I``, and ``s``
+    matches the RMS of ``A^T x`` to the RMS of ``z``.
+    """
+    if dense.ndim != 2 or reference.ndim != 2 or dense.shape[0] != reference.shape[0]:
+        raise ValueError("dense and reference must be (N, D_e) and (N, D)")
+    if reference.shape[1] > dense.shape[1]:
+        raise ValueError("reference dimension exceeds the dense patch dimension")
+    dense64 = dense.detach().double()
+    reference64 = reference.detach().double()
+    cross = reference64.T @ dense64
+    pixel_gram = dense64.T @ dense64
+    latent_norm_sq = (reference64 * reference64).sum().clamp(min=1e-12)
+    u, _, vh = torch.linalg.svd(cross, full_matrices=False)
+    rank = cross.shape[0]
+    basis = (vh[:rank].T @ u[:, :rank].T).contiguous()
+    projected = torch.trace(basis.T @ pixel_gram @ basis)
+    scale = (projected / latent_norm_sq).clamp(min=1e-12).sqrt()
+    return basis.float(), scale.float().reshape(())
+
+
+def compress_patches(dense: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """Eq. 7. ``dense`` is ``(..., D_e)`` and the result is ``(..., D)``."""
+    return dense @ basis.to(dtype=dense.dtype, device=dense.device)
+
+
+def asymmetric_target(clean: torch.Tensor, noise: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """Eq. 8, row-vector form: ``P eps - x0`` with ``P = A A^T``."""
+    projector = basis @ basis.T
+    return noise @ projector.to(dtype=noise.dtype, device=noise.device) - clean
+
+
+def recover_dense_velocity(
+    u_a: torch.Tensor,
+    x_t: torch.Tensor,
+    basis: torch.Tensor,
+    sigma: torch.Tensor | float,
+) -> torch.Tensor:
+    """Recover a full-rank patch velocity from an asymmetric prediction (eq. 9).
+
+    ``u_a`` and ``x_t`` share shape ``(..., D_e)``. ``sigma`` is a scalar or a
+    batch vector of length ``u_a.shape[0]``. The denominator is clamped at
+    ``1e-6``, as in the paper.
+    """
+    if u_a.shape != x_t.shape:
+        raise ValueError(f"u_a shape {tuple(u_a.shape)} != x_t shape {tuple(x_t.shape)}")
+    if basis.ndim != 2 or basis.shape[0] != u_a.shape[-1]:
+        raise ValueError("basis must be (D_e, D) for this patch")
+    calibration_cls, kernel_cls, _path = _asymflow()
+    sigma_t = _broadcast_sigma(sigma, u_a)
+    basis_f = basis.detach().to(device=u_a.device, dtype=torch.float32)
+    ones = torch.ones((), device=u_a.device, dtype=torch.float32)
+    calibration = calibration_cls(s=ones, k=ones, timestep=ones, sigma=sigma_t)
+    recovered = kernel_cls(basis_f).asymflow_velocity(u_a, x_t, calibration)
+    return recovered.to(dtype=u_a.dtype)
+
+
+def _broadcast_sigma(sigma: torch.Tensor | float, like: torch.Tensor) -> torch.Tensor:
+    if not torch.is_tensor(sigma):
+        sigma = torch.tensor(float(sigma), dtype=torch.float32)
+    sigma = sigma.to(device=like.device, dtype=torch.float32)
+    if sigma.ndim == 0:
+        return sigma
+    if sigma.ndim == 1:
+        if sigma.shape[0] != like.shape[0]:
+            raise ValueError(f"sigma batch {sigma.shape[0]} != {like.shape[0]}")
+        return sigma.reshape(like.shape[0], *([1] * (like.ndim - 1)))
+    if sigma.shape == like.shape[: sigma.ndim]:
+        return sigma.reshape(*sigma.shape, *([1] * (like.ndim - sigma.ndim)))
+    raise ValueError(f"cannot broadcast sigma shape {tuple(sigma.shape)} onto {tuple(like.shape)}")
+
+
+def sample_noisy(
+    y0: torch.Tensor,
+    sigma: torch.Tensor | float,
+    noise: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``y_t = (1 - sigma) y0 + sigma eps`` on the scaled lattice."""
+    if noise is None:
+        noise = torch.randn_like(y0)
+    sig = _broadcast_sigma(sigma, y0).to(dtype=y0.dtype)
+    return (1 - sig) * y0 + sig * noise, noise
+
+
+def clean_from_velocity(
+    y_t: torch.Tensor,
+    velocity: torch.Tensor,
+    sigma: torch.Tensor | float,
+) -> torch.Tensor:
+    """``y0_hat = y_t - sigma u``."""
+    sig = _broadcast_sigma(sigma, y_t).to(dtype=y_t.dtype)
+    return y_t - sig * velocity
+
+
+def lot_clean_loss(
+    y0_hat: torch.Tensor,
+    y0: torch.Tensor,
+    sigma: torch.Tensor | float,
+    sigma_floor: float = 0.05,
+) -> torch.Tensor:
+    """Weighted clean-data loss, eq. 17.
+
+    The paper writes a squared Euclidean norm inside the expectation. This
+    returns the mean over elements of that weighted square, which has the
+    same minimizer on a fixed grid and does not grow with the lattice size.
+    """
+    sig = _broadcast_sigma(sigma, y0).clamp(min=sigma_floor)
+    weight = 1.0 / sig.square()
+    return ((y0_hat - y0).float().square() * weight).mean()
+
+
+def apply_extent_scales(
+    latent: torch.Tensor,
+    layout: LotLayout,
+    scales: dict[tuple[int, int, int], torch.Tensor],
+    *,
+    invert: bool = False,
+) -> torch.Tensor:
+    """Divide (or, at decode time, multiply) each patch by its extent scale."""
+    out = latent.clone()
+    for rect in layout.rects:
+        scale = scales[rect.extent].to(device=latent.device, dtype=latent.dtype)
+        region = out[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew]
+        if invert:
+            region = region * scale
+        else:
+            region = region / scale
+        out[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew] = region
+    return out
+
+
+def gather_extent(tokens: torch.Tensor, rects: list[TokenRect]) -> torch.Tensor:
+    """Pack patches of one extent to ``(B, n, D_e)``.
+
+    Site order is C-order over ``(et, eh, ew, D)``, with the token channel
+    fastest. Procrustes rows must use this same order.
+    """
+    chunks = []
+    for rect in rects:
+        patch = tokens[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew, :]
+        chunks.append(patch.reshape(tokens.shape[0], -1))
+    return torch.stack(chunks, dim=1)
+
+
+def scatter_extent(canvas: torch.Tensor, values: torch.Tensor, rects: list[TokenRect]) -> None:
+    """Write ``(B, n, D_e)`` patches back onto a fresh ``(B, T, H, W, D)`` canvas."""
+    token_dim = canvas.shape[-1]
+    for index, rect in enumerate(rects):
+        patch = values[:, index].reshape(canvas.shape[0], rect.et, rect.eh, rect.ew, token_dim)
+        canvas[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew, :] = patch
+
+
+def euler_step(y_t: torch.Tensor, velocity: torch.Tensor, t: float, t_next: float) -> torch.Tensor:
+    """One explicit step of ``dy/dt = u`` from ``t`` to ``t_next``."""
+    return y_t + (float(t_next) - float(t)) * velocity
