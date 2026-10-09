@@ -192,6 +192,25 @@ def lot_clean_loss(
     return ((y0_hat - y0).float().square() * weight).mean()
 
 
+
+def lot_h3_clean_loss(
+    out: torch.Tensor,
+    y_t: torch.Tensor,
+    y0: torch.Tensor,
+    sigma: torch.Tensor | float,
+    sigma_floor: float = 0.05,
+) -> torch.Tensor:
+    """Eq. 17 for H3's head, which predicts ``x0 - eps`` (Fizgig ``sampling.py``).
+
+    The clean estimate is ``y_t + sigma * out``, not ``clean_from_velocity`` (that
+    is the ``eps - x0`` convention). For ``sigma >= sigma_floor`` this equals
+    ``mean((out - (y0 - eps))^2)``: Fizgig's own velocity MSE, taken in y-space.
+    """
+    sig = _broadcast_sigma(sigma, y0).to(dtype=torch.float32)
+    y0_hat = y_t.float() + sig * out.float()
+    weight = 1.0 / sig.clamp(min=sigma_floor).square()
+    return ((y0_hat - y0.float()).square() * weight).mean()
+
 def _one_extent(rects: list[TokenRect]) -> tuple[int, int, int]:
     if not rects:
         raise ValueError("expected at least one rectangle")

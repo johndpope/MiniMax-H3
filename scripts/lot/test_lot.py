@@ -25,6 +25,7 @@ from flow import (  # noqa: E402
     fit_procrustes,
     gather_extent,
     lot_clean_loss,
+    lot_h3_clean_loss,
     mean_basis,
     recover_dense_velocity,
     sample_noisy,
@@ -566,6 +567,45 @@ def test_pair_rows_align_with_coarse_grid():
         assert torch.allclose(site_mean, pooled, atol=1e-6), extent
 
 
+def test_h3_loss_is_velocity_mse_in_y_space():
+    torch.manual_seed(8)
+    y0 = torch.randn(1, 24, 1, 4, 4)
+    eps = torch.randn_like(y0)
+    for sigma in (0.3, 0.92):
+        y_t = (1 - sigma) * y0 + sigma * eps
+        out = torch.randn_like(y0)
+        velocity_mse = (out - (y0 - eps)).square().mean()
+        assert torch.allclose(lot_h3_clean_loss(out, y_t, y0, sigma), velocity_mse, atol=1e-5)
+        assert float(lot_h3_clean_loss(y0 - eps, y_t, y0, sigma)) < 1e-10
+    # Below the floor the weight stops growing.
+    small = 0.01
+    y_t = (1 - small) * y0 + small * eps
+    out = torch.randn_like(y0)
+    assert float(lot_h3_clean_loss(out, y_t, y0, small)) < float((out - (y0 - eps)).square().mean())
+
+
+def test_train_layouts_tile_and_mix():
+    import random as _random
+    from train_h3 import _tile, sample_layout
+
+    torch.manual_seed(9)
+    latent = torch.randn(1, 24, 1, 32, 56)                 # 16x28 tokens, 4x7 super-cells
+    latent[..., :8, :8] *= 6.0                              # one detailed corner
+    kinds = {}
+    for seed in range(40):
+        layout, kind = sample_layout(latent, _random.Random(seed))
+        kinds.setdefault(kind, layout)
+        assert layout.dense_count == 16 * 28 and layout.count <= layout.dense_count
+        assert {rect.extent for rect in layout.rects} <= set(H3_EXTENTS)
+    assert set(kinds) == {"dense", "uniform", "mosaic"}
+    mosaic = kinds["mosaic"]
+    assert len({rect.extent for rect in mosaic.rects}) > 1
+    corner = {rect.extent for rect in mosaic.rects if rect.u < 4 and rect.v < 4}
+    assert corner == {(1, 1, 1)}                            # the detailed cell stays fine
+    for extent in H3_EXTENTS:
+        assert _tile(1, 8, 8, lambda *_: extent).count == 64 // (extent[1] * extent[2])
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -590,6 +630,8 @@ def main():
         test_procrustes_h3_fit_and_guards,
         test_phase4_smoke_canvas,
         test_pair_rows_align_with_coarse_grid,
+        test_h3_loss_is_velocity_mse_in_y_space,
+        test_train_layouts_tile_and_mix,
     ]
     for test in tests:
         test()

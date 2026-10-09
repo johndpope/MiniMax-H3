@@ -75,6 +75,8 @@ Phase 4 is `procrustes_h3.py --pairs DIR [--smoke] [--out FILE]`. `DIR` holds us
 
 `render_h3.py --pairs DIR` samples same-seed 768×1152 stills three ways (dense, LoT with the mean lift, LoT with the fit) from cached H3 text embeddings, so Qwen3-VL is never loaded, and decodes them with the fp16 H3 decoder. `time_decode_h3.py` times one clip decode at the DiT timing shape; LoT does not shorten the VAE.
 
+`train_h3.py` is phase 5 and refuses to train unless `LOT_H3_TRAIN=1`. It trains the LoT adapter (extent heads, shape MLP) and a rank-16 LoRA on `qkv_proj`, `out_proj`, `fc1`, `fc2` in all 50 blocks; AdaLN, the token refiner, the int8 base and the extent bank stay frozen. Each step samples a layout (20% dense 1×1, uniform extents, or a detail-driven mosaic of 4×4 super-cells), moves the clean latent to y-space, draws sigma with H3's own density, and takes `lot_h3_clean_loss`: eq. 17 with H3's `x0 - eps` head, which is Fizgig's velocity MSE in y-space. Data is a Fizgig still cache with cached text (`cache_iso3d`), so Qwen is not loaded. `--check` runs one forward and backward per layout kind, writes nothing, and needs no flag.
+
 `infer.py` loads a `train_synth.py` checkpoint, integrates noise from `t = 1` to `t = 0`, and writes a latent plus a channel-0 preview. It does not call the H3 DiT.
 
 A day-long synthetic run, still outside Separable Causal Diffusion, is the `lot-day` workflow: sanity checks, a 200-step probe, then training for `--minutes` (default 480). Checkpoints go to `scripts/lot/runs/`, which is gitignored.
