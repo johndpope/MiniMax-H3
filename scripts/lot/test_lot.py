@@ -27,6 +27,7 @@ from flow import (  # noqa: E402
     recover_dense_velocity,
     sample_noisy,
 )
+from infer import integrate, sigma_grid  # noqa: E402
 from h3_positions import packed_positions, sample_axis, spatial_axis, video_positions  # noqa: E402
 from h3 import (  # noqa: E402
     H3_EXTENTS,
@@ -278,6 +279,20 @@ def test_h3_positions_match_base_grid():
     assert torch.allclose(packed, reference)
 
 
+def test_euler_inference_recovers_clean():
+    layout = dense_layout(1, 2, 2)
+    clean = torch.randn(2, 1, 2, 2, 3)
+    noise = torch.randn_like(clean)
+
+    def predict(_state, _t, _layout):
+        return noise - clean
+
+    sampled = integrate(predict, noise, layout, sigma_grid(4))
+    assert torch.allclose(sampled, clean, atol=1e-5)
+    assert sigma_grid(4).shape == (5,)
+    assert float(sigma_grid(1)[0]) == 1.0 and float(sigma_grid(1)[-1]) == 0.0
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -291,6 +306,7 @@ def main():
         test_h3_patch_geometry,
         test_fit_extent_rebuilds_heads,
         test_h3_positions_match_base_grid,
+        test_euler_inference_recovers_clean,
     ]
     for test in tests:
         test()

@@ -57,7 +57,10 @@ Set `include_time=True` only if a rectangle spans more than one uniform frame. T
 ```bash
 python3 scripts/lot/test_lot.py
 python3 scripts/lot/gpu_smoke.py
+python3 scripts/lot/infer.py --ckpt scripts/lot/runs/day/last.pt --steps 8
 ```
+
+`infer.py` loads a `train_synth.py` checkpoint, integrates noise from `t = 1` to `t = 0`, and writes a latent plus a channel-0 preview. It does not call the H3 DiT.
 
 A day-long synthetic run, still outside Separable Causal Diffusion, is the `lot-day` workflow: sanity checks, a 200-step probe, then training for `--minutes` (default 480). Checkpoints go to `scripts/lot/runs/`, which is gitignored.
 
