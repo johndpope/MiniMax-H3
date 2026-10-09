@@ -208,14 +208,15 @@ Gate the GPU tests on `nvidia-smi` or `ps`, not on `scripts/lot/runs/day/pid`. T
 The how-to is `scripts/lot/README.md`, section "Training H3 for LoT from your own mp4s". It covers clip spec → Fizgig latent/text caching → Procrustes bank → `--check` → `train_h3.py` → `render_h3.py --trained`. Every command in it was run on this machine first.
 
 - **Run 1** (`scripts/lot/runs/train_h3`, done): 2,000 steps on 777 `cache_iso3d` stills, shift 12 everywhere, swap 4, 101 min. Held-out: dense 0.520 → 0.297, all-2×2 0.270 → 0.194, mosaic 0.387 → 0.262. Renders (`assets/lot-h3-trained-{bands,uniform2}.png`, issue 1 comment `6089145161`): frozen-model streaks and grid texture gone, coarse regions soft. Diagnosis: shift 12 puts 57% of steps at σ > 0.9 and only 3.5% below 0.3. The dense drop is mostly style learning (single-style data).
-- **Run 2** (`scripts/lot/runs/train_h3_shift3`, launched 2026-10-10): `--init runs/train_h3 --shift 3 --dense-shift 12`, same stills, 2,000 steps, swap 4. Log `/tmp/lot_train_h3_shift3.log`. Compare its renders with run 1's on the same held-out prompts.
+- **Run 2** (`scripts/lot/runs/train_h3_shift3`, done): `--init runs/train_h3 --shift 3 --dense-shift 12`, same stills, 2,000 steps, 101 min. Held-out vs its start: dense −0.4%, all-2×2 −5.1%, mosaic −4.4% (final `dense=0.2959 uniform2=0.1835 mosaic=0.2498`). This time the gain is in LoT, not style. But same-seed renders (`assets/lot-h3-run1-vs-run2.png`, issue comment `6090885281`) barely change: coarse regions stay soft.
+- **Run 3** (`scripts/lot/runs/train_h3_distill`, launched 2026-10-10): `--init runs/train_h3_shift3 --shift 3 --distill 1`, 2,000 steps, ~4.4 s/step, ~2 h 45 min. Log `/tmp/lot_train_h3_distill.log`. LoT steps add a frozen-base teacher (LoRA off, dense, same `x_t`) and pull LoT's clean estimate toward it. Evals add `gap_uniform2` / `gap_mosaic`; at step 0 both are ~0.68, about 3× the data loss. When it ends, render held-out prompts against runs 1 and 2 (`render_h3.py --trained runs/train_h3_distill --swap 4`).
 - **Clips:** the cut → cache path is verified on two 22-frame Nikki clips (`latent_7x24x40`). Clip `--check` OOMs at swap 4 and fits at swap 8 (20.0 GB peak, 13–17 s/step). No clip training has run: text caching for real clips needs Qwen (the user's call), and the 61 Nikki mp4s are portrait 480×640, so cut them at 384×640.
 - **Environments:** LoT scripts use the base `python3`. Fizgig cache scripts need Fizgig's requirements; on this machine use `~/miniconda3/envs/sdwebui/bin/python`. Base python lacks `toml`/`voluptuous`.
 - **Branches:** PR 2 is merged to `main`. Later work goes straight to `main`, as the user asked. Local `main` holds an unpushed commit of the user's, `dd76e49` (VFM docs, 5 Sep). It was deliberately not pushed; the LoT commits went up from branch `lot-train` with `git push origin lot-train:main`.
 
 ## Git
 
-Branch `lot-progress`, pushed through `af63e7b` and this doc update. `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
+PR 2 is merged; work goes straight to `main` (pushed from local branch `lot-train`). `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.
 
 Committed: everything under `scripts/lot/` except `runs/`, the render grids under `assets/lot-h3-*.png`, `.grok/workflows/lot-day.rhai` (CPU sanity only; it no longer launches `train_synth.py`), `docs/LOT_H3_COMPUTE_PLAN.md`, and this handoff. Still untracked and not part of this port: `scripts/scd/*`, `IMF/`, `assets/scrya/`, `Ref2VA/Ref2VA.combined`, `lora_gauss_collapse`, `.grok/workflows/vfm-stack.rhai`, `scripts/start_wandb_tui.sh`.
 
@@ -227,13 +228,13 @@ Do not stage `scripts/scd/`, `IMF/`, `wandb`, or `scripts/lot/runs/`.
 
 Earlier pushed LoT commits on the fork include `5c75a3c` (adapter and synthetic trainer), `e3db6c6` (Euler inference), `1241444` (same-seed compare), `4d65f30` (mixed grid). Unpushed SCD commit `22a4814` was reset off the branch and must not be resurrected.
 
-Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`, `6076658364`, `6077238907` (Fizgig commit), `6078182740` (phase-4 fit, smoke, decode), `6080008545` (band renders), `6080233526` (all-2×2 renders), `6086168608` (Q&A: VAE, timing, VRAM, quality), `6086348323` (trainer + `--check`), plus a short training-started note. The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
+Issue 1 comments already posted, do not repeat them: `6074574741`, `6074662733`, `6074686915`, `6074914028`, `6075056553`, `6075068523`, `6075595059`, `6076658364`, `6077238907` (Fizgig commit), `6078182740` (phase-4 fit, smoke, decode), `6080008545` (band renders), `6080233526` (all-2×2 renders), `6086168608` (Q&A: VAE, timing, VRAM, quality), `6086348323` (trainer + `--check`), `6088092043` (run 1 curve), `6089145161` (run 1 renders), `6090354134` (run 2 curve), `6090885281` (run 2 renders), plus short launch notes for each run. The 37-frame timing, the parity re-run, and the head-sign fix were posted as one comment: `6075595059` (https://github.com/johndpope/MiniMax-H3/issues/1#issuecomment-6075595059). Post the next comment only after a new verified `LOT_H3` line (for example a phase-4 `kind=procrustes` / `kind=smoke` line), and quote it.
 
 ## What to do next
 
-1. When training exits, quote the `train_eval` lines (dense must not climb) and run the `--trained` render above. Post both to issue 1 with the grid under `assets/`.
-2. Clips: cache the 61 Nikki mp4s at 384×640, 22 frames (`minimax_cache_latents.py`, `minimax_cache_text.py`). Text caching runs Qwen in a separate process and needs the user's OK.
-3. Optional: re-run `bench_h3.py` once to record `dense_retries`/`lot_retries`.
+1. When run 3 exits, quote its `train_eval` lines (watch `gap_*`; `dense` must stay flat), render against runs 1 and 2, and post both to issue 1.
+2. If distillation doesn't sharpen the coarse regions: try a larger `--rank` or nonlinear extent heads (option c). Mixed-style data (option b) needs Qwen to caption new data; ask the user first.
+3. Open user question: an H3 version of the LoT "sequential edits" speed demo (Brian Chao's FLUX.2 post, 4.3×). The Ref2VA int8 checkpoint is `/media/2TB/ComfyUI/models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors`. Option A is a speed-only chain with no Qwen; option B is real edits, which need Qwen per turn and a LoT run on Ref2VA. Reference rows stay dense, so expect ~1.35–1.55× fewer tokens, not 4.3×.
 
 ## Hard rules, short
 
