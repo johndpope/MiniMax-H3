@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -34,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from phase3_sample import sample, score  # noqa: E402
 from phase3_train import import_fizgig  # noqa: E402
 from scd_data import ClipSet  # noqa: E402
-from scd_lora import add_lora, lora_param_groups, lora_parameters, lora_report, lora_state_dict  # noqa: E402
+from scd_lora import add_lora, lora_parameters, lora_report, lora_state_dict  # noqa: E402
 from scd_model import DEFAULT_DECODER_SOURCE, DEFAULT_ENCODER_DEPTH, MiniMaxH3SCD  # noqa: E402
 
 
@@ -134,7 +133,7 @@ def main():
         if n not in clip_bank:
             clip_bank[n] = clips.load(n, device="cpu", dtype=torch.bfloat16)
 
-    print(f"loading SCD student…", flush=True)
+    print("loading SCD student…", flush=True)
     base = load_dit(args.checkpoint, device=device, compute_dtype=torch.bfloat16,
                     quantize=True, base_quant="nf4")
     scd = MiniMaxH3SCD(base, encoder_depth=DEFAULT_ENCODER_DEPTH,
@@ -199,7 +198,6 @@ def main():
         sigma = float(rec["sigma"])
         noised = ((1.0 - sigma) * x0 + sigma * noise).to(torch.bfloat16)
         v_t = rec["v"].float().to(device)
-        h29 = rec["h29"].float().to(device) if rec.get("h29") is not None else None
         h49 = rec["h49"].float().to(device) if rec.get("h49") is not None else None
 
         # One random frame — full-T graphs OOM on 24 GB with rank-32.
