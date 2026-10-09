@@ -29,6 +29,17 @@ is randomly cropped to a token grid divisible by 4. ``--init DIR`` warm-starts
 the adapter and LoRA from an earlier run's ``adapter.pt`` / ``lora.safetensors``
 with a fresh optimizer.
 
+Distillation (``--distill W``): on LoT steps, the frozen base (LoRA off, dense
+layout) predicts the clean latent from the same ``x_t`` (same noise, same
+sigma), and the student's clean estimate, mapped back with ``to_x``, is pulled
+toward it with the same ``1 / max(sigma, 0.05)^2`` weight. The target is still
+a one-step posterior mean, not a sample; what it adds is that LoT learns to
+reproduce *dense H3's* prediction at every sigma instead of a noisy data
+target, and the base teacher carries no style drift. ``--data-weight`` scales
+the eq. 17 data term (0 = distillation only). Each LoT step costs one extra
+no-grad dense forward. Evals also report ``gap_*``: the same weighted distance
+between LoT and the base teacher, which is the number distillation drives.
+
 Writes only under ``--out`` (default ``scripts/lot/runs/train_h3``, gitignored):
 ``log.jsonl``, and at ``--save-every`` and the end ``adapter.pt`` +
 ``lora.safetensors``. Refuses to start unless ``LOT_H3_TRAIN=1``.
@@ -214,6 +225,18 @@ def check(adapter, dit, network, groups, items, rng, device, args) -> None:
         finally:
             dit._lot = None
         loss = lot_h3_clean_loss(out, y_t, y0, sigma)
+        if args.distill > 0 and kind != "dense":
+            # Teacher: same x_t, LoRA off, dense, no grad. Pulled toward with the same weight.
+            x_t = (1.0 - sigma).reshape(1, 1, 1, 1, 1) * x0 + sigma.reshape(1, 1, 1, 1, 1) * (y_t - (1.0 - sigma).reshape(1, 1, 1, 1, 1) * y0) / sigma.reshape(1, 1, 1, 1, 1)
+            for module in network.unet_loras:
+                module.multiplier = 0.0
+            with torch.no_grad():
+                teacher_out = dit(x_t, 1.0 - sigma, text)
+            for module in network.unet_loras:
+                module.multiplier = 1.0
+            target = x_t + sigma.reshape(1, 1, 1, 1, 1) * teacher_out.float()
+            student = splice.to_x(y_t.float() + sigma.reshape(1, 1, 1, 1, 1) * out.float())
+            loss = loss + args.distill * (student - target).square().mean() / float(sigma.clamp(min=0.05)) ** 2
         loss.backward()
         torch.cuda.synchronize()
         lora_grad = sum(float(p.grad.abs().sum()) for p in groups[0]["params"] if p.grad is not None)
@@ -236,6 +259,10 @@ def main() -> None:
                         help="sigma density for LoT steps: float shift, 'sigmoid', or 'lognorm:S'")
     parser.add_argument("--dense-shift", type=parse_shift, default=12.0,
                         help="sigma density for the dense anchor steps (12 = H3's own)")
+    parser.add_argument("--distill", type=float, default=0.0,
+                        help="weight of the frozen-dense-teacher term on LoT steps (0 = off)")
+    parser.add_argument("--data-weight", type=float, default=1.0,
+                        help="weight of the eq. 17 data term (0 = distillation only)")
     parser.add_argument("--init", type=Path, default=None,
                         help="warm-start adapter.pt + lora.safetensors from an earlier run dir")
     parser.add_argument("--steps", type=int, default=2000)
@@ -318,6 +345,7 @@ def main() -> None:
     print(f"LOT_H3 kind=train_start items={len(train_items)} holdout={len(held_items)} "
           f"lora_modules={len(network.unet_loras)} trainable={trainable} optimizer={opt_name} "
           f"swap={args.swap} shift={args.shift} dense_shift={args.dense_shift} caches={len(caches)} "
+          f"distill={args.distill} data_weight={args.data_weight} "
           f"allocated_mb={torch.cuda.memory_allocated() / 2**20:.0f}", flush=True)
 
     if args.check:
@@ -326,7 +354,27 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     log = open(args.out / "log.jsonl", "a")
 
-    def step_loss(item, item_rng, *, layout=None, sigma=None, noise_seed=None):
+    def set_lora(on: bool) -> None:
+        for module in network.unet_loras:
+            module.multiplier = 1.0 if on else 0.0
+
+    def teacher_clean(x0, noise, sigma, text) -> torch.Tensor:
+        """Frozen base (LoRA off, dense) clean estimate from the same x_t; H3's head is x0 - eps."""
+        x_t = (1.0 - sigma).reshape(1, 1, 1, 1, 1) * x0 + sigma.reshape(1, 1, 1, 1, 1) * noise
+        set_lora(False)
+        try:
+            with torch.no_grad():
+                out = dit(x_t, 1.0 - sigma, text)
+        finally:
+            set_lora(True)
+        return (x_t + sigma.reshape(1, 1, 1, 1, 1) * out.float()).detach()
+
+    def teacher_gap(splice, out, y_t, sigma, target) -> torch.Tensor:
+        student = splice.to_x(y_t.float() + sigma.reshape(1, 1, 1, 1, 1) * out.float())
+        weight = 1.0 / float(sigma.clamp(min=0.05)) ** 2
+        return (student - target).square().mean() * weight
+
+    def step_loss(item, item_rng, *, layout=None, sigma=None, noise_seed=None, with_teacher=False):
         x0, text = load_item(item, item_rng, device)
         if layout is None:
             layout, kind = sample_layout(x0, item_rng, args.dense_p)
@@ -345,15 +393,21 @@ def main() -> None:
             out = dit(y_t, 1.0 - sigma, text)
         finally:
             dit._lot = None
-        return lot_h3_clean_loss(out, y_t, y0, sigma), out, y_t, y0, sigma, layout, kind
+        data = lot_h3_clean_loss(out, y_t, y0, sigma)
+        gap = None
+        if with_teacher or (args.distill > 0 and kind != "dense"):
+            gap = teacher_gap(splice, out, y_t, sigma, teacher_clean(x0, noise, sigma, text))
+        loss = args.data_weight * data + (args.distill * gap if gap is not None and kind != "dense"
+                                          and not with_teacher else 0.0)
+        return loss, out, y_t, y0, sigma, layout, kind, data, gap
 
     def evaluate(step: int) -> None:
         network.eval()
-        results = {"dense": [], "uniform2": [], "mosaic": []}
+        results = {"dense": [], "uniform2": [], "mosaic": [], "gap_uniform2": [], "gap_mosaic": []}
         per_extent: dict[str, list] = {}
         with torch.no_grad():
             for index, item in enumerate(held_items):
-                for kind in results:
+                for kind in ("dense", "uniform2", "mosaic"):
                     item_rng = random.Random(1000 + index)
                     x0, _text = load_item(item, random.Random(1000 + index), device)
                     _b, _c, tt, hh, ww = x0.shape
@@ -364,9 +418,12 @@ def main() -> None:
                     else:
                         layout, _ = sample_layout(x0, random.Random(2000 + index), dense_p=0.0)
                     sigma = (0.3, 0.6, 0.9)[index % 3]
-                    loss, out, y_t, y0, sig, lay, _ = step_loss(item, item_rng, layout=layout,
-                                                                 sigma=sigma, noise_seed=index)
-                    results[kind].append(float(loss))
+                    _loss, out, y_t, y0, sig, lay, _, data, gap = step_loss(
+                        item, item_rng, layout=layout, sigma=sigma, noise_seed=index,
+                        with_teacher=(kind != "dense"))
+                    results[kind].append(float(data))
+                    if gap is not None:
+                        results[f"gap_{kind}"].append(float(gap))
                     if kind == "mosaic":
                         for key, value in extent_losses(out, y_t, y0, sig, lay).items():
                             per_extent.setdefault(key, []).append(value)
@@ -389,7 +446,7 @@ def main() -> None:
     started = time.perf_counter()
     for step in range(1, args.steps + 1):
         item = rng.choice(train_items)
-        loss, _out, _y_t, _y0, sigma, layout, kind = step_loss(item, rng)
+        loss, _out, _y_t, _y0, sigma, layout, kind, data, gap = step_loss(item, rng)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]], 1.0)
@@ -399,13 +456,15 @@ def main() -> None:
         # Free the grads now, not at the next step: evaluation and saving run between
         # steps, and ~350 MB of live grads on top of the Adam state OOMed the step-250 eval.
         optimizer.zero_grad(set_to_none=True)
-        record = {"step": step, "loss": float(loss), "sigma": float(sigma), "kind": kind,
+        record = {"step": step, "loss": float(loss.detach()), "data": float(data.detach()),
+                  "gap": None if gap is None else float(gap.detach()), "sigma": float(sigma), "kind": kind,
                   "tokens": layout.count, "dense": layout.dense_count, "grad_norm": float(grad_norm),
                   "seconds": round(time.perf_counter() - started, 1)}
         log.write(json.dumps(record) + "\n")
         if step % 25 == 0:
             log.flush()
-            print(f"LOT_H3 kind=train step={step} loss={record['loss']:.4f} sigma={record['sigma']:.3f} "
+            gap_text = "" if record["gap"] is None else f" gap={record['gap']:.4f}"
+            print(f"LOT_H3 kind=train step={step} loss={record['loss']:.4f}{gap_text} sigma={record['sigma']:.3f} "
                   f"layout={kind} tokens={layout.count}/{layout.dense_count} "
                   f"s_per_step={(time.perf_counter() - started) / step:.2f} "
                   f"peak_mb={torch.cuda.max_memory_allocated() / 2**20:.0f}", flush=True)

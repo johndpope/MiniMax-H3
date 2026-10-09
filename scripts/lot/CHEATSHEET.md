@@ -81,6 +81,8 @@ python3 scripts/lot/time_decode_h3.py    # VAE decode (LoT does not speed this u
 | `--shift` | 12 | Noise density for LoT steps. **3** trains low σ, where detail forms. |
 | `--dense-shift` | 12 | Noise density for the 20% dense anchor steps (H3's own). |
 | `--init DIR` | none | Warm-start `adapter.pt` + `lora.safetensors`, fresh optimizer. |
+| `--distill W` | 0 | Pull LoT's clean estimate toward frozen dense H3 (LoRA off) from the same `x_t`. Costs one no-grad dense forward per LoT step. Evals add `gap_*`. |
+| `--data-weight` | 1.0 | Scale of the eq. 17 data term (0 = distillation only). |
 | `--dense-p` | 0.2 | Share of steps on the plain dense layout. |
 | `--rank` | 16 | LoRA rank on qkv / out / fc1 / fc2 × 50 blocks (200 modules). |
 
