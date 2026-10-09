@@ -41,7 +41,9 @@ TE_CACHE = Path("/media/2TB/lora-data/fizgig_minimax_h3/cache_iso3d")
 CAPTIONS = Path("/media/2TB/lora-data/fizgig_minimax_h3/isometric_3d_stills")
 VAE = Path("/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors")
 WIDTH, HEIGHT = 768, 1152
-SWAP = 32
+# A still fits fully resident: 20.2 GB int8 weights, 20.8 GB peak on the 24 GB card.
+# Streaming 32 blocks made every forward ~13.5 s instead of ~0.69 s.
+SWAP = 0
 
 
 def load_prompts(count: int) -> list[tuple[str, torch.Tensor]]:
@@ -98,6 +100,7 @@ def main() -> None:
     parser.add_argument("--layout", choices=("bands", "uniform2", "uniform4"), default="bands",
                         help="bands: 1x1/2x2/4x2 thirds; uniformN: every token NxN")
     parser.add_argument("--variants", default="dense,lot_mean,lot_fit")
+    parser.add_argument("--swap", type=int, default=SWAP, help="blocks streamed from CPU (0 = all resident)")
     args = parser.parse_args()
 
     refuse_if_busy("render_h3.py")
@@ -117,8 +120,9 @@ def main() -> None:
     }
 
     model = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
-                                base_quant="int8", blocks_to_swap=SWAP)
-    model.enable_block_swap(SWAP, h2d_only=True)
+                                base_quant="int8", blocks_to_swap=args.swap)
+    if args.swap:
+        model.enable_block_swap(args.swap, h2d_only=True)
     model.eval()
     model._tread = None
 
