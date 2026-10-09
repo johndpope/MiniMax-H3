@@ -192,6 +192,31 @@ def lot_clean_loss(
     return ((y0_hat - y0).float().square() * weight).mean()
 
 
+def _one_extent(rects: list[TokenRect]) -> tuple[int, int, int]:
+    if not rects:
+        raise ValueError("expected at least one rectangle")
+    extent = rects[0].extent
+    for rect in rects[1:]:
+        if rect.extent != extent:
+            raise ValueError(f"rectangles mix extents {extent} and {rect.extent}")
+    return extent
+
+
+def _windows(rects: list[TokenRect], device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Broadcast indices ``(n, et, eh, ew)`` for every rectangle of one extent."""
+    et, eh, ew = _one_extent(rects)
+    t = torch.tensor([rect.t for rect in rects], dtype=torch.long, device=device)
+    u = torch.tensor([rect.u for rect in rects], dtype=torch.long, device=device)
+    v = torch.tensor([rect.v for rect in rects], dtype=torch.long, device=device)
+    dt = torch.arange(et, device=device)
+    du = torch.arange(eh, device=device)
+    dv = torch.arange(ew, device=device)
+    tt = t[:, None, None, None] + dt[None, :, None, None]
+    uu = u[:, None, None, None] + du[None, None, :, None]
+    vv = v[:, None, None, None] + dv[None, None, None, :]
+    return tt, uu, vv
+
+
 def apply_extent_scales(
     latent: torch.Tensor,
     layout: LotLayout,
@@ -199,16 +224,21 @@ def apply_extent_scales(
     *,
     invert: bool = False,
 ) -> torch.Tensor:
-    """Divide (or, at decode time, multiply) each patch by its extent scale."""
+    """Divide each patch by its extent scale. ``invert=True`` multiplies it back.
+
+    One index write per extent. A unit scale hides a swapped multiply, so tests
+    use a scale other than 1.
+    """
     out = latent.clone()
+    buckets: dict[tuple[int, int, int], list[TokenRect]] = {}
     for rect in layout.rects:
-        scale = scales[rect.extent].to(device=latent.device, dtype=latent.dtype)
-        region = out[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew]
-        if invert:
-            region = region * scale
-        else:
-            region = region / scale
-        out[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew] = region
+        buckets.setdefault(rect.extent, []).append(rect)
+    for extent, rects in buckets.items():
+        scale = scales[extent].to(device=latent.device, dtype=latent.dtype)
+        tt, uu, vv = _windows(rects, latent.device)
+        region = out[:, tt, uu, vv, :]
+        region = region * scale if invert else region / scale
+        out[:, tt, uu, vv, :] = region
     return out
 
 
@@ -216,21 +246,20 @@ def gather_extent(tokens: torch.Tensor, rects: list[TokenRect]) -> torch.Tensor:
     """Pack patches of one extent to ``(B, n, D_e)``.
 
     Site order is C-order over ``(et, eh, ew, D)``, with the token channel
-    fastest. Procrustes rows must use this same order.
+    fastest. Procrustes rows must use this same order. One index read for the
+    whole extent.
     """
-    chunks = []
-    for rect in rects:
-        patch = tokens[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew, :]
-        chunks.append(patch.reshape(tokens.shape[0], -1))
-    return torch.stack(chunks, dim=1)
+    tt, uu, vv = _windows(rects, tokens.device)
+    patches = tokens[:, tt, uu, vv, :]
+    return patches.reshape(tokens.shape[0], len(rects), -1)
 
 
 def scatter_extent(canvas: torch.Tensor, values: torch.Tensor, rects: list[TokenRect]) -> None:
     """Write ``(B, n, D_e)`` patches back onto a fresh ``(B, T, H, W, D)`` canvas."""
-    token_dim = canvas.shape[-1]
-    for index, rect in enumerate(rects):
-        patch = values[:, index].reshape(canvas.shape[0], rect.et, rect.eh, rect.ew, token_dim)
-        canvas[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew, :] = patch
+    tt, uu, vv = _windows(rects, canvas.device)
+    et, eh, ew = _one_extent(rects)
+    patches = values.reshape(canvas.shape[0], len(rects), et, eh, ew, canvas.shape[-1])
+    canvas[:, tt, uu, vv, :] = patches
 
 
 def euler_step(y_t: torch.Tensor, velocity: torch.Tensor, t: float, t_next: float) -> torch.Tensor:

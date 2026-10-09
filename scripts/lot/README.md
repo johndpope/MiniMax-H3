@@ -55,10 +55,21 @@ Set `include_time=True` only if a rectangle spans more than one uniform frame. T
 ## Checks
 
 ```bash
+python3 scripts/lot/sanity.py
 python3 scripts/lot/test_lot.py
 python3 scripts/lot/gpu_smoke.py
 python3 scripts/lot/infer.py --ckpt scripts/lot/runs/day/last.pt --steps 8
 ```
+
+`sanity.py` is CPU-only. It checks that a mixed layout attends over 6 tokens instead of 64, that the velocity is still the full 8×8 canvas, and that an 8×8 square is rejected by the H3 extent bank. It does not write a checkpoint. `train_synth.py` also writes none unless `--save-every` is positive.
+
+The H3 tail lives in `h3_splice.py`. Fizgig `MiniMaxH3DiT._lot` defaults to `None`. When it is a `LotSplice`, only the target-video rows are shortened, sigma passed into the velocity step is `1 - t`, and `forward_cached` raises. Setting `_lot` and `_tread` together raises. That path does not load a checkpoint by itself.
+
+H3's head predicts `x0 - eps`, the negation of what eq. 9 expects. `LotSplice.project_rows` passes `x0_minus_eps=True`, which flips the head before recovery and the velocity after, so the Fizgig sampler steps the result unchanged. A 1×1 basis has no orthogonal complement, so the 1×1 parity cannot catch a wrong sign; `test_h3_head_sign_recovery` does.
+
+After a Procrustes fit the scales are not 1, and the DiT input must be y-space. Build the state from `splice.to_y(x0)`, construct `LotSplice(..., y_space=True)`, and map the clean estimate back with `splice.to_x`. A splice without `y_space=True` raises once any scale in its layout differs from 1.
+
+Phase 4 is `procrustes_h3.py --pairs DIR [--smoke] [--out FILE]`. `DIR` holds user-supplied `{et}x{eh}x{ew}.pt` files with `dense (N, 96·et·eh·ew)` and `reference (N, 96)` in `gather_extent` row order; there is no `1x1x1.pt`. A missing directory exits. The fit reads only the two pretrained head maps from the checkpoint on CPU, calls `fit_extent`, and checks `AᵀA = I`, finite positive scales, and an unchanged 1×1 head. `--smoke` runs one frozen y-space forward on the 384×640, `latent_t=7` canvas and asserts shape, finite values, and the packed length, not picture quality. It writes nothing unless `--out` is given. The GPU scripts refuse to start while another one is running (`gpu_guard.py`).
 
 `infer.py` loads a `train_synth.py` checkpoint, integrates noise from `t = 1` to `t = 0`, and writes a latent plus a channel-0 preview. It does not call the H3 DiT.
 

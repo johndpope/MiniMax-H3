@@ -229,8 +229,18 @@ class LotVisualAdapter(nn.Module):
         tokens: torch.Tensor,
         sigma: torch.Tensor | float,
         layout: LotLayout,
+        *,
+        x0_minus_eps: bool = False,
     ) -> torch.Tensor:
-        """Extent heads plus eq. 9, scattered onto the uniform lattice."""
+        """Extent heads plus eq. 9, scattered onto the uniform lattice.
+
+        Eq. 9 assumes the head predicts ``P eps - x0`` and returns ``eps - x0``.
+        H3's head predicts the negation (``x0 - eps``, Fizgig ``sampling.py``).
+        ``x0_minus_eps=True`` flips the head before recovery and the velocity
+        after, so the result stays in the caller's convention. A unit extent has
+        no complement, so 1x1 parity cannot see a wrong sign here.
+        """
+        sign = -1.0 if x0_minus_eps else 1.0
         self._check_tokens(tokens, layout)
         if states.shape != (tokens.shape[0], layout.count, self.hidden_size):
             raise ValueError(
@@ -240,10 +250,10 @@ class LotVisualAdapter(nn.Module):
         velocity = tokens.new_zeros(tokens.shape)
         for extent, indices in layout.groups():
             rects = [layout.rects[index] for index in indices]
-            u_a = self.out_proj[_key(extent)](states[:, indices])
+            u_a = sign * self.out_proj[_key(extent)](states[:, indices])
             x_t = gather_extent(tokens, rects)
             recovered = recover_dense_velocity(u_a, x_t, self.bank.basis(extent), sigma)
-            scatter_extent(velocity, recovered, rects)
+            scatter_extent(velocity, sign * recovered, rects)
         return velocity
 
     def forward(self, tokens, sigma, layout: LotLayout, backbone, backbone_kwargs=None):

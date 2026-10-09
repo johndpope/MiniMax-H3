@@ -147,7 +147,12 @@ def main():
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--save-every", type=int, default=200)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Write one overwritten last.pt every N steps. 0 writes no checkpoint.",
+    )
     args = parser.parse_args()
     if args.steps is None and args.minutes is None:
         args.steps = 200
@@ -242,7 +247,7 @@ def main():
                 )
             step += 1
 
-    if losses and not saw_nan:
+    if args.save_every > 0 and losses and not saw_nan:
         torch.save(
             {
                 "step": step,

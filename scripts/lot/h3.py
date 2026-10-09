@@ -16,6 +16,7 @@ import itertools
 import torch
 
 from adapter import LotVisualAdapter
+from layout import TokenRect, layout_from_rects
 
 
 H3_LATENT_CHANNELS = 24
@@ -95,3 +96,38 @@ def tokens_per_frame(layout_count: int, time: int) -> float:
 
 def over_wan_frame_budget(layout_count: int, time: int) -> bool:
     return tokens_per_frame(layout_count, time) > WAN_MAX_TOKENS_PER_FRAME
+
+
+def gate_frame_layout(height: int = 24, width: int = 42):
+    """One frame of three horizontal bands: 1×1, then 2×2, then 4×2.
+
+    The default is the 768×1344 timing clip: 24×42 tokens, 462 rectangles.
+    Width 42 is not divisible by 4, so the coarse band is 4×2, not 4×4.
+    Rows 0–7 are 1×1, rows 8–15 are 2×2, rows 16–23 are 4×2. The phase-4
+    smoke canvas (384×640) is ``gate_frame_layout(12, 20)``.
+    """
+    band = height // 3
+    if height % 3 or band % 4 or width % 2:
+        raise ValueError(f"token grid {(height, width)} needs height a multiple of 12 and an even width")
+    rects = []
+    for u in range(band):
+        for v in range(width):
+            rects.append(TokenRect(0, u, v, 1, 1, 1))
+    for u in range(band, 2 * band, 2):
+        for v in range(0, width, 2):
+            rects.append(TokenRect(0, u, v, 1, 2, 2))
+    for u in range(2 * band, height, 4):
+        for v in range(0, width, 2):
+            rects.append(TokenRect(0, u, v, 1, 4, 2))
+    return layout_from_rects(1, height, width, rects)
+
+
+def clip_layout(frames: int, height: int = 24, width: int = 42):
+    """``gate_frame_layout`` repeated on every latent frame."""
+    frame = gate_frame_layout(height, width)
+    rects = [
+        TokenRect(t, rect.u, rect.v, 1, rect.eh, rect.ew)
+        for t in range(frames)
+        for rect in frame.rects
+    ]
+    return layout_from_rects(frames, height, width, rects)

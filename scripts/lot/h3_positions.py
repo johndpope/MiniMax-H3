@@ -91,16 +91,35 @@ def video_positions(layout: LotLayout, latent_height: int, latent_width: int, or
     return torch.stack([torch.stack(row) for row in rows], dim=0)
 
 
+def _frame_rows(latent_height: int, latent_width: int) -> torch.Tensor:
+    sqrt_area = math.sqrt(latent_height * latent_width)
+    height = spatial_axis(latent_height, 2, sqrt_area)
+    width = spatial_axis(latent_width, 2, sqrt_area)
+    hh, ww = torch.meshgrid(height, width, indexing="ij")
+    return torch.stack([hh.reshape(-1), ww.reshape(-1)], dim=-1)
+
+
+def _span_sum(num_frames: int) -> float:
+    return float(sum(FRAME_RESCALE * FRAME_PER_TOKEN[index % 5] for index in range(num_frames)))
+
+
 def packed_positions(
     layout: LotLayout,
     latent_height: int,
     latent_width: int,
     text_len: int,
     num_audio_latents: int,
+    keyframes: list[int] | None = None,
+    refs: list[tuple] | None = None,
 ) -> tuple[torch.Tensor, int]:
     """``(S, 3)`` positions and the index where target video begins.
 
-    Audio does not advance the video clock. Both start at ``text_len``.
+    Order matches Fizgig: text, keyframes, refs, audio, target video. Audio
+    does not advance the video clock. With no keyframes and no refs both start
+    at ``text_len``. A reference image advances the cursor by 1. A video-kind
+    reference ``(h, w, t)`` with ``t > 1`` advances it by the video span sum.
+    Keyframe rows are inserted before the refs, but their time is the cursor
+    after those refs, plus ``5/3 * frame_index``.
     """
     if text_len < 0 or num_audio_latents < 0:
         raise ValueError("text and audio lengths must be non-negative")
@@ -108,7 +127,32 @@ def packed_positions(
     text = torch.zeros(text_len, 3, dtype=torch.float64)
     if text_len:
         text[:, 0] = torch.arange(text_len, dtype=torch.float64)
+    target_frame = _frame_rows(latent_height, latent_width)
+    ref_rows = []
+    for ref in refs or ():
+        rh, rw = int(ref[0]), int(ref[1])
+        rt = int(ref[2]) if len(ref) > 2 else 1
+        frame = _frame_rows(rh, rw)
+        if rt > 1:
+            times = video_time(rt, cursor)
+            block = torch.empty(rt * frame.shape[0], 3, dtype=torch.float64)
+            block[:, 0] = times.repeat_interleave(frame.shape[0])
+            block[:, 1:] = frame.repeat(rt, 1)
+            ref_rows.append(block)
+            cursor += _span_sum(rt)
+            continue
+        block = torch.empty(frame.shape[0], 3, dtype=torch.float64)
+        block[:, 0] = cursor
+        block[:, 1:] = frame
+        ref_rows.append(block)
+        cursor += 1.0
     parts = [text]
+    for index in keyframes or ():
+        block = torch.empty(target_frame.shape[0], 3, dtype=torch.float64)
+        block[:, 0] = cursor + FRAME_RESCALE * float(index)
+        block[:, 1:] = target_frame
+        parts.append(block)
+    parts.extend(ref_rows)
     if num_audio_latents:
         sqrt_area = math.sqrt(latent_height * latent_width)
         width_axis = spatial_axis(latent_width, 2, sqrt_area)

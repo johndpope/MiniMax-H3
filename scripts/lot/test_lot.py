@@ -17,28 +17,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from adapter import LotVisualAdapter  # noqa: E402
 from flow import (  # noqa: E402
     _asymflow,
+    apply_extent_scales,
     asymmetric_target,
     clean_from_velocity,
     compress_patches,
     euler_step,
     fit_procrustes,
+    gather_extent,
     lot_clean_loss,
     mean_basis,
     recover_dense_velocity,
     sample_noisy,
+    scatter_extent,
 )
 from infer import integrate, sigma_grid  # noqa: E402
 from h3_positions import packed_positions, sample_axis, spatial_axis, video_positions  # noqa: E402
 from h3 import (  # noqa: E402
     H3_EXTENTS,
+    clip_layout,
     H3_HIDDEN,
     H3_PATCH,
     H3_TOKEN_DIM,
+    gate_frame_layout,
     make_h3_adapter,
     over_wan_frame_budget,
     patchify,
     unpatchify,
 )
+from h3_splice import LotSplice  # noqa: E402
 from layout import (  # noqa: E402
     TokenRect,
     blur_radius,
@@ -49,6 +55,11 @@ from layout import (  # noqa: E402
     layout_from_regions,
     layout_from_vrs,
     shape_features,
+)
+from sanity import (  # noqa: E402
+    block_macs,
+    check_h3_bank_rejects_coarse_square,
+    check_short_sequence_full_canvas,
 )
 
 
@@ -277,6 +288,134 @@ def test_h3_positions_match_base_grid():
 
     reference = image_position_ids(3, 4, 6, num_audio_latents=2, latent_t=2)
     assert torch.allclose(packed, reference)
+    still = dense_layout(1, 2, 3)
+    with_cond, _start = packed_positions(
+        still, 4, 6, text_len=3, num_audio_latents=2, keyframes=[0], refs=[(4, 6), (4, 6, 2)],
+    )
+    cond_ref = image_position_ids(
+        3, 4, 6, num_audio_latents=2, latent_t=1, keyframes=[0], refs=[(4, 6), (4, 6, 2)],
+    )
+    assert torch.allclose(with_cond, cond_ref)
+
+
+def test_vectorized_gather_and_scale():
+    torch.manual_seed(0)
+    layout = layout_from_rects(1, 4, 4, [
+        TokenRect(0, 0, 0, 1, 2, 2),
+        TokenRect(0, 0, 2, 1, 2, 2),
+        TokenRect(0, 2, 0, 1, 1, 2),
+        TokenRect(0, 2, 2, 1, 1, 2),
+        TokenRect(0, 3, 0, 1, 1, 4),
+    ])
+    tokens = torch.randn(2, 1, 4, 4, 3, requires_grad=True)
+    gathered = []
+    for _extent, indices in layout.groups():
+        rects = [layout.rects[index] for index in indices]
+        gathered.append(gather_extent(tokens, rects))
+        slow = torch.stack([
+            tokens[:, rect.t:rect.t + rect.et, rect.u:rect.u + rect.eh, rect.v:rect.v + rect.ew]
+            .reshape(tokens.shape[0], -1)
+            for rect in rects
+        ], dim=1)
+        assert torch.equal(gathered[-1], slow)
+    canvas = tokens.new_zeros(tokens.shape)
+    for (_extent, indices), values in zip(layout.groups(), gathered):
+        scatter_extent(canvas, values, [layout.rects[index] for index in indices])
+    assert torch.equal(canvas, tokens)
+    scales = {extent: torch.tensor(2.0 + index) for index, (extent, _rects) in enumerate(layout.groups())}
+    scaled = apply_extent_scales(tokens.detach(), layout, scales, invert=False)
+    restored = apply_extent_scales(scaled, layout, scales, invert=True)
+    assert torch.allclose(restored, tokens.detach())
+    assert not torch.allclose(scaled, tokens.detach())
+
+
+def test_gate_band_and_sigma():
+    layout = gate_frame_layout()
+    assert layout.count == 462
+    assert layout.dense_count == 1008
+    assert abs(layout.compression - 1008 / 462) < 1e-9
+    assert {rect.extent for rect in layout.rects} == {(1, 1, 1), (1, 2, 2), (1, 4, 2)}
+    coarse = layout_from_rects(1, 2, 2, [TokenRect(0, 0, 0, 1, 2, 2)])
+    adapter = LotVisualAdapter(4, 8, [(1, 1, 1), (1, 2, 2)])
+    tokens = torch.randn(1, 1, 2, 2, 4)
+    states = torch.randn(1, 1, 8)
+    at_sigma = adapter.velocity_from_states(states, tokens, 0.4, coarse)
+    swapped = adapter.velocity_from_states(states, tokens, 0.6, coarse)
+    assert not torch.allclose(at_sigma, swapped)
+
+
+def test_final_layer_sees_modulated_states():
+    import sys as _sys
+    fizgig = "/media/2TB/Fizgig/src"
+    if fizgig not in _sys.path:
+        _sys.path.insert(0, fizgig)
+    from fizgig.minimax.model import FinalLayer
+
+    torch.manual_seed(1)
+    hidden, token_dim, t_dim = 8, 4, 4
+    layer = FinalLayer(hidden, t_dim, token_dim, 2, 1e-6)
+    adapter = LotVisualAdapter(token_dim, hidden, [(1, 1, 1)])
+    adapter.init_from_pretrained(torch.randn(hidden, token_dim), layer.video_out.weight.detach(), None, layer.video_out.bias.detach())
+    states = torch.randn(3, hidden)
+    t_emb = torch.randn(1, t_dim)
+    splice = LotSplice(adapter, dense_layout(1, 1, 1))
+    modulated = splice.modulate(layer, states, t_emb, 0)
+    assert torch.allclose(adapter.out_proj["1x1x1"](modulated), layer.video_out(modulated))
+    assert not torch.allclose(adapter.out_proj["1x1x1"](states), layer.video_out(modulated))
+
+
+def test_splice_shortens_and_cached_refuses():
+    layout = layout_from_rects(1, 2, 2, [TokenRect(0, 0, 0, 1, 2, 2)])
+    adapter = LotVisualAdapter(4, 8, [(1, 2, 2)])
+    splice = LotSplice(adapter, layout)
+    rows = torch.randn(4, 4)
+    tokens = splice.video_tokens(rows, 1, 4, 4)
+    assert splice.embed_rows(tokens).shape == (1, 8)
+    dense_pos = torch.zeros(2 + 4, 3, dtype=torch.float64)
+    dense_pos[-4:, 0] = 5
+    replaced = splice.replace_video_positions(dense_pos, 1, 4, 4)
+    assert replaced.shape == (3, 3)
+    assert float(replaced[-1, 0]) == 5.0
+    projected = splice.project_rows(torch.randn(1, 8), tokens, 0.4)
+    assert projected.shape == (4, 4)
+
+    import sys as _sys
+    fizgig = "/media/2TB/Fizgig/src"
+    if fizgig not in _sys.path:
+        _sys.path.insert(0, fizgig)
+    from fizgig.minimax.model import MiniMaxH3DiT
+
+    model = MiniMaxH3DiT.__new__(MiniMaxH3DiT)
+    model._lot = splice
+    try:
+        MiniMaxH3DiT.forward_cached(model, torch.zeros(1, 24, 1, 4, 4), torch.tensor(0.5), torch.zeros(1, 2, 8))
+    except RuntimeError as exc:
+        assert "forward_cached" in str(exc)
+    else:
+        raise AssertionError("forward_cached accepted a LoT tail")
+    model._tread = (0.5, 0, 1)
+    try:
+        MiniMaxH3DiT.forward(model, torch.zeros(1, 24, 1, 4, 4), torch.tensor(0.5), torch.zeros(1, 2, 8))
+    except RuntimeError as exc:
+        assert "TREAD" in str(exc)
+    else:
+        raise AssertionError("forward accepted LoT and TREAD together")
+
+
+def test_sanity_short_sequence_writes_nothing():
+    def refuse_save(*_args, **_kwargs):
+        raise AssertionError("sanity check tried to write a checkpoint")
+
+    original = torch.save
+    torch.save = refuse_save
+    try:
+        numbers = check_short_sequence_full_canvas()
+        check_h3_bank_rejects_coarse_square()
+    finally:
+        torch.save = original
+    assert numbers["tokens"] == 6 and numbers["dense"] == 64
+    assert numbers["macs"] == block_macs(6, 32, 2, 2)
+    assert numbers["macs"] < numbers["dense_macs"] / 2
 
 
 def test_euler_inference_recovers_clean():
@@ -293,6 +432,125 @@ def test_euler_inference_recovers_clean():
     assert float(sigma_grid(1)[0]) == 1.0 and float(sigma_grid(1)[-1]) == 0.0
 
 
+def test_h3_head_sign_recovery():
+    """H3's head is ``x0 - P eps``. Eq. 9 needs the flip; a 1x1 basis cannot show it."""
+    torch.manual_seed(5)
+    adapter = LotVisualAdapter(4, 16, [(1, 2, 2)])
+    with torch.no_grad():
+        adapter.out_proj["1x2x2"].weight.copy_(torch.eye(16))
+        adapter.out_proj["1x2x2"].bias.zero_()
+    layout = layout_from_rects(1, 2, 2, [TokenRect(0, 0, 0, 1, 2, 2)])
+    basis = adapter.bank.basis((1, 2, 2))
+    y0 = torch.randn(1, 1, 2, 2, 4)
+    eps = torch.randn_like(y0)
+    sigma = 0.3
+    y_t = (1 - sigma) * y0 + sigma * eps
+    head = -asymmetric_target(y0.reshape(1, 16), eps.reshape(1, 16), basis)
+    states = head.reshape(1, 1, 16)
+    h3_velocity = adapter.velocity_from_states(states, y_t, sigma, layout, x0_minus_eps=True)
+    assert torch.allclose(h3_velocity, y0 - eps, atol=1e-5)
+    wrong = adapter.velocity_from_states(states, y_t, sigma, layout)
+    assert not torch.allclose(-wrong, y0 - eps, atol=1e-2)
+    # One H3 step to sigma 0 (Fizgig sampling.py) lands on the clean latent.
+    assert torch.allclose(y_t + sigma * h3_velocity, y0, atol=1e-5)
+
+
+def test_splice_y_space_contract():
+    import sys as _sys
+    fizgig = "/media/2TB/Fizgig/src"
+    if fizgig not in _sys.path:
+        _sys.path.insert(0, fizgig)
+    from fizgig.minimax.model import patchify_video
+
+    torch.manual_seed(6)
+    adapter = make_h3_adapter(hidden_size=8)
+    guess = torch.linalg.qr(torch.randn(384, 96), mode="reduced").Q
+    reference = torch.randn(400, 96)
+    adapter.bank.fit_((1, 2, 2), 2.0 * reference @ guess.T, reference)
+    layout = layout_from_rects(1, 2, 4, [TokenRect(0, 0, 0, 1, 2, 2), *(
+        TokenRect(0, u, v, 1, 1, 1) for u in range(2) for v in range(2, 4))])
+    x0 = torch.randn(1, 24, 1, 4, 8)
+    rows = patchify_video(x0, (1, 2, 2))
+    assert torch.equal(rows.reshape(1, 1, 2, 4, 96), patchify(x0))
+
+    x_space = LotSplice(adapter, layout)
+    assert not x_space.unit_scales()
+    try:
+        x_space.video_tokens(rows, 1, 4, 8)
+    except ValueError as exc:
+        assert "y_t" in str(exc)
+    else:
+        raise AssertionError("fitted scales accepted an x-space splice")
+
+    splice = LotSplice(adapter, layout, y_space=True)
+    y0 = splice.to_y(x0)
+    assert torch.allclose(patchify(y0), adapter.bank.scale_clean(patchify(x0), layout))
+    assert torch.allclose(y0[..., :4, :4], x0[..., :4, :4] / 2.0, atol=1e-4)
+    assert torch.equal(y0[..., 4:], x0[..., 4:])
+    assert torch.allclose(splice.to_x(y0), x0, atol=1e-5)
+    assert splice.video_tokens(patchify_video(y0, (1, 2, 2)), 1, 4, 8).shape == (1, 1, 2, 4, 96)
+    assert LotSplice(adapter, dense_layout(1, 2, 4)).unit_scales()
+
+
+def test_procrustes_h3_fit_and_guards():
+    from procrustes_h3 import check_pair, fit_bank, load_pairs, parse_extent
+
+    try:
+        load_pairs(Path("/nonexistent/lot_pairs"))
+    except SystemExit as exc:
+        assert "does not invent" in str(exc)
+    else:
+        raise AssertionError("a missing pair directory did not exit")
+    assert parse_extent("1x4x2") == (1, 4, 2)
+    for bad in ("1x4", "a_b_c"):
+        try:
+            parse_extent(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} parsed")
+    try:
+        check_pair((1, 2, 2), torch.randn(50, 384), torch.randn(50, 96))
+    except ValueError as exc:
+        assert "rank" in str(exc)
+    else:
+        raise AssertionError("too few rows were accepted")
+
+    torch.manual_seed(7)
+    adapter = make_h3_adapter(hidden_size=8)
+    try:
+        fit_bank(adapter, {})
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("fit before init_from_pretrained")
+    adapter.init_from_pretrained(torch.randn(8, 96), torch.randn(96, 8), torch.randn(8), torch.randn(96))
+    pairs = {}
+    for extent, true_scale in (((1, 2, 2), 2.0), ((1, 4, 2), 0.5)):
+        dim = 96 * extent[1] * extent[2]
+        lift = torch.linalg.qr(torch.randn(dim, 96), mode="reduced").Q
+        reference = torch.randn(300, 96)
+        pairs[extent] = check_pair(extent, true_scale * reference @ lift.T, reference)
+    reports = {tuple(r["extent"]): r for r in fit_bank(adapter, pairs)}
+    assert abs(reports[(1, 2, 2)]["scale"] - 2.0) < 1e-3
+    assert abs(reports[(1, 4, 2)]["scale"] - 0.5) < 1e-3
+    assert all(r["ortho_err"] < 1e-4 for r in reports.values())
+    assert float(adapter.bank.scale((1, 1, 1))) == 1.0
+
+
+def test_phase4_smoke_canvas():
+    layout = clip_layout(7, 12, 20)
+    assert layout.count == 7 * (4 * 20 + 2 * 10 + 10)
+    assert {rect.extent for rect in layout.rects} == {(1, 1, 1), (1, 2, 2), (1, 4, 2)}
+    assert clip_layout(37).count == 17094
+    try:
+        clip_layout(1, 10, 20)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a 10-row grid was banded")
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -306,7 +564,16 @@ def main():
         test_h3_patch_geometry,
         test_fit_extent_rebuilds_heads,
         test_h3_positions_match_base_grid,
+        test_sanity_short_sequence_writes_nothing,
+        test_vectorized_gather_and_scale,
+        test_gate_band_and_sigma,
+        test_final_layer_sees_modulated_states,
+        test_splice_shortens_and_cached_refuses,
         test_euler_inference_recovers_clean,
+        test_h3_head_sign_recovery,
+        test_splice_y_space_contract,
+        test_procrustes_h3_fit_and_guards,
+        test_phase4_smoke_canvas,
     ]
     for test in tests:
         test()
