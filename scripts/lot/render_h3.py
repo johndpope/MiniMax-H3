@@ -46,12 +46,12 @@ WIDTH, HEIGHT = 768, 1152
 SWAP = 0
 
 
-def load_prompts(count: int) -> list[tuple[str, torch.Tensor]]:
-    """First ``count`` cached embeddings (sorted by name) with their caption text."""
+def load_prompts(count: int, paths: list[Path] | None = None) -> list[tuple[str, torch.Tensor]]:
+    """``count`` cached embeddings with their caption text: ``paths``, else the first by name."""
     from safetensors import safe_open
 
     prompts = []
-    for path in sorted(TE_CACHE.glob("*_minimaxh3_te.safetensors"))[:count]:
+    for path in (paths or sorted(TE_CACHE.glob("*_minimaxh3_te.safetensors")))[:count]:
         with safe_open(str(path), "pt") as handle:
             hidden = handle.get_tensor("hidden_states")
             mask = handle.get_tensor("attention_mask")
@@ -101,6 +101,10 @@ def main() -> None:
                         help="bands: 1x1/2x2/4x2 thirds; uniformN: every token NxN")
     parser.add_argument("--variants", default="dense,lot_mean,lot_fit")
     parser.add_argument("--swap", type=int, default=SWAP, help="blocks streamed from CPU (0 = all resident)")
+    parser.add_argument("--trained", type=Path, default=None,
+                        help="train_h3 output dir (adapter.pt, lora.safetensors): enables the dense_lora and "
+                             "lot_trained variants and renders the trainer's held-out prompts")
+    parser.add_argument("--rank", type=int, default=16, help="LoRA rank train_h3 used")
     args = parser.parse_args()
 
     refuse_if_busy("render_h3.py")
@@ -125,8 +129,32 @@ def main() -> None:
         model.enable_block_swap(args.swap, h2d_only=True)
     model.eval()
     model._tread = None
+    network = None
+    if args.trained is not None:
+        from fizgig.networks.lora import create_network
+        from train_h3 import LORA_PATTERNS
 
-    prompts = load_prompts(args.prompts)
+        trained = make_h3_adapter()
+        trained.load_state_dict(torch.load(args.trained / "adapter.pt", map_location="cpu", weights_only=True))
+        splices["lot_trained"] = LotSplice(trained.cuda(), layout, y_space=True)
+        network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], model,
+                                 include_patterns=LORA_PATTERNS)
+        network.apply_to(text_encoders=None, unet=model, apply_text_encoder=False, apply_unet=True)
+        info = network.load_weights(str(args.trained / "lora.safetensors"))
+        if info.missing_keys:
+            raise RuntimeError(f"LoRA load missed {len(info.missing_keys)} keys")
+        network.to(device="cuda", dtype=torch.bfloat16).eval()
+
+    def set_lora(on: bool) -> None:
+        for module in getattr(network, "unet_loras", []):
+            module.multiplier = 1.0 if on else 0.0
+
+    held = None
+    if args.trained is not None:
+        from train_h3 import CACHE, list_items
+
+        held = [te for _latent, te in list_items(CACHE, 24)[1]]
+    prompts = load_prompts(args.prompts, held)
     variants = [name for name in args.variants.split(",") if name]
     latents: dict[tuple[int, str], torch.Tensor] = {}
     timings: dict[str, list[float]] = {name: [] for name in variants}
@@ -141,13 +169,14 @@ def main() -> None:
             embeds = embeds.to("cuda", torch.bfloat16)
             for name in variants:
                 model._lot = splices.get(name)
+                set_lora(name in ("dense_lora", "lot_trained"))
                 start = time.perf_counter()
                 with torch.inference_mode():
                     latent = _sample_image_impl(model, embeds, width=WIDTH, height=HEIGHT, steps=args.steps,
                                                 seed=args.seed + index, num_frames=1)
                 torch.cuda.synchronize()
                 timings[name].append(time.perf_counter() - start)
-                if name == "lot_fit":
+                if name in ("lot_fit", "lot_trained"):
                     latent = splices[name].to_x(latent.float())
                 latents[(index, name)] = latent.float().cpu()
                 print(f"LOT_H3 kind=render prompt={index} variant={name} seconds={timings[name][-1]:.1f} "
