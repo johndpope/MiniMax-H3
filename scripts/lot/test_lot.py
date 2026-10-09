@@ -551,6 +551,21 @@ def test_phase4_smoke_canvas():
         raise AssertionError("a 10-row grid was banded")
 
 
+def test_pair_rows_align_with_coarse_grid():
+    """Row i of ``dense`` must cover the pixels of reference token i (row-major)."""
+    from make_pairs_h3 import block_rects
+
+    tokens = torch.randn(1, 1, 8, 4, 3)
+    for extent in ((1, 2, 2), (1, 4, 2), (1, 2, 4), (1, 1, 2)):
+        _et, eh, ew = extent
+        if 4 % ew:
+            continue
+        dense = gather_extent(tokens, block_rects(8, 4, extent))[0]
+        pooled = tokens[0, 0].reshape(8 // eh, eh, 4 // ew, ew, 3).mean(dim=(1, 3)).reshape(-1, 3)
+        site_mean = dense.reshape(dense.shape[0], eh * ew, 3).mean(dim=1)
+        assert torch.allclose(site_mean, pooled, atol=1e-6), extent
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -574,6 +589,7 @@ def main():
         test_splice_y_space_contract,
         test_procrustes_h3_fit_and_guards,
         test_phase4_smoke_canvas,
+        test_pair_rows_align_with_coarse_grid,
     ]
     for test in tests:
         test()

@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Same-seed stills: dense H3, LoT with the mean lift, LoT with a Procrustes fit.
+
+    python3 scripts/lot/render_h3.py --pairs DIR [--prompts 3] [--steps 20] [--out DIR]
+
+Text conditioning is a cached H3 text embedding (``*_minimaxh3_te.safetensors``
+from a Fizgig cache), so the Qwen3-VL encoder is never loaded. Every column
+starts from the same noise. LoT columns use the 768×1152 band layout
+(``clip_layout(1, 36, 24)``: 1×1, 2×2, 4×2 bands). The fitted column samples in
+y-space and maps the clean latent back with ``to_x`` before decoding. A frozen
+base was never trained on fitted scales, so that column is a smoke, not a
+quality claim.
+
+Decodes with the fp16 H3 decoder after sampling and writes PNGs plus a grid
+into ``--out`` (default ``scripts/lot/runs/render``, gitignored).
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, "/media/2TB/Fizgig/src")
+
+from gpu_guard import refuse_if_busy  # noqa: E402
+from h3 import clip_layout, make_h3_adapter  # noqa: E402
+from h3_splice import LotSplice  # noqa: E402
+from procrustes_h3 import CHECKPOINT, fit_bank, load_pairs, pretrained_maps  # noqa: E402
+
+TE_CACHE = Path("/media/2TB/lora-data/fizgig_minimax_h3/cache_iso3d")
+CAPTIONS = Path("/media/2TB/lora-data/fizgig_minimax_h3/isometric_3d_stills")
+VAE = Path("/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors")
+WIDTH, HEIGHT = 768, 1152
+SWAP = 32
+
+
+def load_prompts(count: int) -> list[tuple[str, torch.Tensor]]:
+    """First ``count`` cached embeddings (sorted by name) with their caption text."""
+    from safetensors import safe_open
+
+    prompts = []
+    for path in sorted(TE_CACHE.glob("*_minimaxh3_te.safetensors"))[:count]:
+        with safe_open(str(path), "pt") as handle:
+            hidden = handle.get_tensor("hidden_states")
+            mask = handle.get_tensor("attention_mask")
+        stem = path.name.replace("_minimaxh3_te.safetensors", "")
+        caption = CAPTIONS / f"{stem}.txt"
+        text = caption.read_text().strip() if caption.is_file() else stem
+        prompts.append((text, hidden[mask].unsqueeze(0)))
+    return prompts
+
+
+def to_image(pixels: torch.Tensor) -> Image.Image:
+    array = (pixels[0].permute(1, 2, 0).float().cpu().numpy() * 255.0).round().clip(0, 255)
+    return Image.fromarray(array.astype(np.uint8))
+
+
+def grid(rows: list[list[Image.Image]], labels: list[str], scale: float = 0.33) -> Image.Image:
+    cell_w, cell_h = int(WIDTH * scale), int(HEIGHT * scale)
+    header = 28
+    sheet = Image.new("RGB", (cell_w * len(labels), header + cell_h * len(rows)), "white")
+    draw = ImageDraw.Draw(sheet)
+    for col, label in enumerate(labels):
+        draw.text((col * cell_w + 6, 8), label, fill="black")
+    for row, images in enumerate(rows):
+        for col, image in enumerate(images):
+            sheet.paste(image.resize((cell_w, cell_h), Image.LANCZOS), (col * cell_w, header + row * cell_h))
+    return sheet
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--pairs", type=Path, required=True)
+    parser.add_argument("--prompts", type=int, default=3)
+    parser.add_argument("--steps", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "runs" / "render")
+    args = parser.parse_args()
+
+    refuse_if_busy("render_h3.py")
+    pairs = load_pairs(args.pairs)
+    from fizgig.minimax.loader import load_minimax_h3_dit
+    from fizgig.minimax.sampling import _sample_image_impl
+
+    mean = make_h3_adapter()
+    mean.init_from_pretrained(*pretrained_maps(CHECKPOINT))
+    fitted = make_h3_adapter()
+    fitted.init_from_pretrained(*pretrained_maps(CHECKPOINT))
+    reports = fit_bank(fitted, pairs)
+    layout = clip_layout(1, HEIGHT // 32, WIDTH // 32)
+    splices = {
+        "lot_mean": LotSplice(mean.cuda(), layout),
+        "lot_fit": LotSplice(fitted.cuda(), layout, y_space=True),
+    }
+
+    model = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
+                                base_quant="int8", blocks_to_swap=SWAP)
+    model.enable_block_swap(SWAP, h2d_only=True)
+    model.eval()
+    model._tread = None
+
+    prompts = load_prompts(args.prompts)
+    variants = ["dense", "lot_mean", "lot_fit"]
+    latents: dict[tuple[int, str], torch.Tensor] = {}
+    timings: dict[str, list[float]] = {name: [] for name in variants}
+    seq: dict[str, tuple] = {}
+    def remember(_module, inputs, _output) -> None:
+        # Must return None: a forward hook's return value replaces the block output.
+        seq.setdefault("lot" if model._lot is not None else "dense", tuple(inputs[0].shape))
+
+    hook = model.blocks[0].register_forward_hook(remember)
+    try:
+        for index, (_text, embeds) in enumerate(prompts):
+            embeds = embeds.to("cuda", torch.bfloat16)
+            for name in variants:
+                model._lot = splices.get(name)
+                start = time.perf_counter()
+                with torch.inference_mode():
+                    latent = _sample_image_impl(model, embeds, width=WIDTH, height=HEIGHT, steps=args.steps,
+                                                seed=args.seed + index, num_frames=1)
+                torch.cuda.synchronize()
+                timings[name].append(time.perf_counter() - start)
+                if name == "lot_fit":
+                    latent = splices[name].to_x(latent.float())
+                latents[(index, name)] = latent.float().cpu()
+                print(f"LOT_H3 kind=render prompt={index} variant={name} seconds={timings[name][-1]:.1f} "
+                      f"finite={int(bool(torch.isfinite(latent).all()))}", flush=True)
+    finally:
+        hook.remove()
+        model._lot = None
+    del model, splices, mean, fitted
+    gc.collect()
+
+    from safetensors import safe_open
+    from fizgig.minimax.vae import MiniMaxH3VideoVAEDecoder
+
+    decoder = MiniMaxH3VideoVAEDecoder()
+    with safe_open(str(VAE), framework="pt", device="cpu") as handle:
+        decoder.load_state_dict({key: handle.get_tensor(key) for key in handle.keys()}, strict=False)
+    decoder = decoder.to("cuda", torch.float16).eval()
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for index in range(len(prompts)):
+        row = []
+        for name in variants:
+            with torch.inference_mode():
+                image = to_image(decoder.decode(latents[(index, name)].to("cuda")))
+            image.save(args.out / f"p{index}_{name}.png")
+            row.append(image)
+        rows.append(row)
+    medians = {name: float(np.median(values)) for name, values in timings.items()}
+    labels = [f"{name}  {medians[name]:.0f}s/img" for name in variants]
+    grid(rows, labels).save(args.out / "grid.png")
+    meta = {
+        "steps": args.steps, "seed": args.seed, "canvas": f"{WIDTH}x{HEIGHT}", "layout_tokens": layout.count,
+        "dense_tokens": layout.dense_count, "seq": {k: list(v) for k, v in seq.items()},
+        "seconds_median": medians, "prompts": [text for text, _ in prompts],
+        "fit": [{**r, "extent": list(r["extent"])} for r in reports],
+    }
+    (args.out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"LOT_H3 kind=render_done out={args.out} seq={seq} "
+          + " ".join(f"{k}_s={v:.1f}" for k, v in medians.items()) + " ok=1", flush=True)
+
+
+if __name__ == "__main__":
+    main()
