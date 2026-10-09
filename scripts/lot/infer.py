@@ -127,17 +127,26 @@ def choose_layout(name: str, grid: int):
 
 
 @torch.no_grad()
-def sample(adapter, backbone, layout, batch: int, steps: int, generator: torch.Generator | None = None):
+def sample(
+    adapter,
+    backbone,
+    layout,
+    batch: int,
+    steps: int,
+    generator: torch.Generator | None = None,
+    noise: torch.Tensor | None = None,
+):
     device = next(adapter.parameters()).device
-    noise = torch.randn(
-        batch,
-        layout.time,
-        layout.height,
-        layout.width,
-        adapter.token_dim,
-        device=device,
-        generator=generator,
-    )
+    if noise is None:
+        noise = torch.randn(
+            batch,
+            layout.time,
+            layout.height,
+            layout.width,
+            adapter.token_dim,
+            device=device,
+            generator=generator,
+        )
     times = sigma_grid(steps).to(device)
 
     def predict(state, t, current):
@@ -145,6 +154,84 @@ def sample(adapter, backbone, layout, batch: int, steps: int, generator: torch.G
 
     latent = integrate(predict, noise, layout, times)
     return adapter.bank.unscale(latent, layout)
+
+
+def cosine(a: torch.Tensor, b: torch.Tensor) -> float:
+    left = a.detach().float().reshape(-1)
+    right = b.detach().float().reshape(-1)
+    return float(torch.nn.functional.cosine_similarity(left, right, dim=0))
+
+
+def save_layout_comparison(
+    samples: dict[str, torch.Tensor],
+    path: Path,
+    train_step: int,
+    seed: int,
+    steps: int,
+) -> list[tuple[str, str, float]]:
+    """Channel 0 of each layout on one color scale. Scores are full-latent cosines."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    names = list(samples)
+    fields = [samples[name][0, 0, :, :, 0].detach().float().cpu() for name in names]
+    stacked = torch.stack(fields)
+    limit = float(stacked.abs().max().clamp(min=1e-6))
+    reference = samples[names[0]]
+    scores = [(names[0], name, cosine(reference, samples[name])) for name in names]
+
+    fig, axes = plt.subplots(1, len(names), figsize=(3.1 * len(names), 3.8), dpi=140)
+    image = None
+    for ax, name, field, (_left, _right, score) in zip(axes, names, fields, scores):
+        image = ax.imshow(field, cmap="magma", vmin=-limit, vmax=limit)
+        ax.set_title(f"{name}\ncosine {score:.3f}")
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.colorbar(image, ax=axes.tolist(), fraction=0.02, pad=0.02)
+    fig.suptitle(f"Same noise seed {seed}, {steps} Euler steps, checkpoint {train_step}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    return scores
+
+
+def run_layout_comparison(adapter, backbone, spec, train_step, args) -> None:
+    """One noise tensor, five layouts. Prints cosine similarity against the dense layout."""
+    device = next(adapter.parameters()).device
+    generator = torch.Generator(device="cuda").manual_seed(args.seed)
+    noise = torch.randn(
+        args.batch,
+        1,
+        args.grid,
+        args.grid,
+        adapter.token_dim,
+        device=device,
+        generator=generator,
+    )
+    names = ("dense", "2", "4", "2x4", "4x2")
+    samples = {}
+    for name in names:
+        layout = choose_layout(name, args.grid)
+        missing = sorted({rect.extent for rect in layout.rects} - set(map(tuple, spec["extents"])))
+        if missing:
+            raise SystemExit(f"layout {name} needs extents {missing}")
+        latent = sample(adapter, backbone, layout, args.batch, args.steps, noise=noise)
+        if not torch.isfinite(latent).all():
+            raise SystemExit(f"layout {name} produced non-finite values")
+        samples[f"{name} {layout.count}/{layout.dense_count}"] = latent.detach().cpu()
+        print(
+            f"layout {name} tokens {layout.count}/{layout.dense_count} "
+            f"mean {float(latent.mean()):.4f} std {float(latent.std()):.4f}",
+            flush=True,
+        )
+    preview = args.out.with_suffix(".png")
+    scores = save_layout_comparison(samples, preview, int(train_step or 0), args.seed, args.steps)
+    torch.save({"samples": samples, "scores": scores, "seed": args.seed, "train_step": train_step}, args.out)
+    for left, right, score in scores:
+        print(f"cosine {left} vs {right} {score:.4f}", flush=True)
+    print(f"LOT_COMPARE seed={args.seed} preview={preview}", flush=True)
 
 
 def save_preview(latent: torch.Tensor, path: Path) -> None:
@@ -177,6 +264,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--out", type=Path, default=Path("scripts/lot/runs/day/sample.pt"))
+    parser.add_argument("--compare", action="store_true")
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is not available")
@@ -187,6 +275,9 @@ def main():
     adapter, backbone, spec, step = load_synth(args.ckpt, device, heads=args.heads)
     if spec["token_dim"] != adapter.token_dim:
         raise SystemExit("token dim mismatch")
+    if args.compare:
+        run_layout_comparison(adapter, backbone, spec, step, args)
+        return
     layout = choose_layout(args.layout, args.grid)
     missing = sorted({rect.extent for rect in layout.rects} - set(map(tuple, spec["extents"])))
     if missing:
