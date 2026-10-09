@@ -395,7 +395,8 @@ def main() -> None:
             dit._lot = None
         data = lot_h3_clean_loss(out, y_t, y0, sigma)
         gap = None
-        if with_teacher or (args.distill > 0 and kind != "dense"):
+        # Training draws its own layout (kind != "fixed"); evals pass one and opt in explicitly.
+        if with_teacher or (args.distill > 0 and kind not in ("dense", "fixed")):
             gap = teacher_gap(splice, out, y_t, sigma, teacher_clean(x0, noise, sigma, text))
         loss = args.data_weight * data + (args.distill * gap if gap is not None and kind != "dense"
                                           and not with_teacher else 0.0)
