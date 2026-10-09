@@ -9,15 +9,25 @@ and a rank-16 LoRA on ``attn.qkv_proj``, ``attn.out_proj``, ``mlp.fc1``,
 extent bank (``A``, ``s`` from ``--pairs``) stay frozen.
 
 One step: sample a layout, move the clean latent to y-space (``to_y``), draw
-sigma with H3's own training density (Fizgig ``sample_sigmas``), noise, run the
-DiT with the LoT tail, and take ``lot_h3_clean_loss`` (eq. 17 in H3's
-``x0 - eps`` convention: velocity MSE in y-space). About 20% of steps use the
-dense 1×1 layout, which is the ordinary H3 LoRA loss and anchors the base.
+sigma (Fizgig ``sample_sigmas``), noise, run the DiT with the LoT tail, and
+take ``lot_h3_clean_loss`` (eq. 17 in H3's ``x0 - eps`` convention: velocity
+MSE in y-space). About 20% of steps use the dense 1×1 layout, which is the
+ordinary H3 LoRA loss and anchors the base.
 
-Data: a Fizgig H3 cache directory of still latents ``*_minimaxh3.safetensors``
-with their ``*_minimaxh3_te.safetensors`` text, so Qwen is never loaded. Each
-latent is randomly cropped to a token grid divisible by 4. Clips come later,
-once cached at 384×640, ``latent_t = 7``.
+Sigma: ``--dense-shift`` for the dense anchor steps (default 12, H3's own
+density: median 0.92, ~3% of steps below 0.3) and ``--shift`` for LoT steps.
+The first 2,000-step run used 12 for both and the coarse regions came out
+soft: detail is decided at low sigma, which shift 12 almost never trains.
+A float is the uniform-u shift map, ``sigmoid`` is logit-normal, ``lognorm:S``
+is logit-normal under shift S (see Fizgig ``sample_sigmas``).
+
+Data: one or more Fizgig H3 cache directories (``--cache``, repeatable) of
+``*_minimaxh3.safetensors`` latents with ``*_minimaxh3_te.safetensors`` text,
+so Qwen is never loaded here. Stills are ``(24, H, W)``; clips are
+``(24, T, H, W)`` (cache 384×640, 22 frames for ``latent_t = 7``). Each latent
+is randomly cropped to a token grid divisible by 4. ``--init DIR`` warm-starts
+the adapter and LoRA from an earlier run's ``adapter.pt`` / ``lora.safetensors``
+with a fresh optimizer.
 
 Writes only under ``--out`` (default ``scripts/lot/runs/train_h3``, gitignored):
 ``log.jsonl``, and at ``--save-every`` and the end ``adapter.pt`` +
@@ -66,6 +76,8 @@ COARSE = [(1, 2, 4), (1, 4, 2), (1, 4, 4), (1, 1, 4), (1, 4, 1)]
 
 def list_items(cache: Path, holdout: int) -> tuple[list, list]:
     """``(latent_path, te_path)`` pairs, split deterministically into train / held out."""
+    if not cache.is_dir():
+        raise SystemExit(f"cache directory {cache} does not exist")
     items = []
     for latent in sorted(cache.glob("*_minimaxh3.safetensors")):
         stem = re.sub(r"_\d{4}x\d{4}_minimaxh3\.safetensors$", "", latent.name)
@@ -80,7 +92,10 @@ def list_items(cache: Path, holdout: int) -> tuple[list, list]:
 
 
 def load_item(item, rng: random.Random, device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Clean latent ``(1, 24, 1, H, W)`` cropped to a 4-token multiple, and text ``(1, L, 5120)``."""
+    """Clean latent ``(1, 24, T, H, W)`` cropped to a 4-token multiple, and text ``(1, L, 5120)``.
+
+    A still is ``T = 1``; a cached clip keeps its latent frames.
+    """
     from safetensors import safe_open
 
     latent_path, te_path = item
@@ -169,6 +184,13 @@ def extent_losses(out, y_t, y0, sigma, layout: LotLayout) -> dict[str, float]:
 
 # --------------------------------------------------------------------------------- train
 
+def parse_shift(value: str):
+    """``12`` -> 12.0; ``sigmoid`` and ``lognorm:S`` pass through to ``sample_sigmas``."""
+    if value == "sigmoid" or value.startswith("lognorm:"):
+        return value
+    return float(value)
+
+
 def check(adapter, dit, network, groups, items, rng, device, args) -> None:
     """Forward + backward once per layout kind. No optimizer step, nothing written."""
     from fizgig.minimax.trainer import sample_sigmas
@@ -182,7 +204,7 @@ def check(adapter, dit, network, groups, items, rng, device, args) -> None:
                 break
         splice = LotSplice(adapter, layout, y_space=True)
         y0 = splice.to_y(x0)
-        sigma = sample_sigmas(1, device)
+        sigma = sample_sigmas(1, device, shift=args.dense_shift if kind == "dense" else args.shift)
         y_t, _ = sample_noisy(y0, sigma)
         torch.cuda.reset_peak_memory_stats()
         start = time.perf_counter()
@@ -208,7 +230,14 @@ def check(adapter, dit, network, groups, items, rng, device, args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--pairs", type=Path, required=True, help="Procrustes pair dir for the frozen bank")
-    parser.add_argument("--cache", type=Path, default=CACHE)
+    parser.add_argument("--cache", type=Path, action="append", default=None,
+                        help=f"Fizgig H3 cache dir; repeat to mix stills and clips (default {CACHE})")
+    parser.add_argument("--shift", type=parse_shift, default=12.0,
+                        help="sigma density for LoT steps: float shift, 'sigmoid', or 'lognorm:S'")
+    parser.add_argument("--dense-shift", type=parse_shift, default=12.0,
+                        help="sigma density for the dense anchor steps (12 = H3's own)")
+    parser.add_argument("--init", type=Path, default=None,
+                        help="warm-start adapter.pt + lora.safetensors from an earlier run dir")
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--adapter-lr", type=float, default=1e-4)
@@ -238,7 +267,12 @@ def main() -> None:
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
-    train_items, held_items = list_items(args.cache, args.holdout)
+    caches = args.cache or [CACHE]
+    train_items, held_items = [], []
+    for cache in caches:
+        train_part, held_part = list_items(cache, args.holdout)
+        train_items += train_part
+        held_items += held_part
 
     adapter = make_h3_adapter()
     adapter.init_from_pretrained(*pretrained_maps(CHECKPOINT))
@@ -256,6 +290,13 @@ def main() -> None:
     network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], dit,
                              include_patterns=LORA_PATTERNS)
     network.apply_to(text_encoders=None, unet=dit, apply_text_encoder=False, apply_unet=True)
+    if args.init is not None:
+        state = torch.load(args.init / "adapter.pt", map_location="cpu", weights_only=True)
+        adapter.load_state_dict(state)
+        info = network.load_weights(str(args.init / "lora.safetensors"))
+        if info.missing_keys:
+            raise RuntimeError(f"--init LoRA is missing {len(info.missing_keys)} keys")
+        print(f"LOT_H3 kind=train_init from={args.init}", flush=True)
     network.requires_grad_(True)
     network.to(device=device, dtype=torch.bfloat16)
     expected = len(LORA_PATTERNS) * len(dit.blocks)
@@ -276,7 +317,8 @@ def main() -> None:
     trainable = sum(p.numel() for g in groups for p in g["params"])
     print(f"LOT_H3 kind=train_start items={len(train_items)} holdout={len(held_items)} "
           f"lora_modules={len(network.unet_loras)} trainable={trainable} optimizer={opt_name} "
-          f"swap={args.swap} allocated_mb={torch.cuda.memory_allocated() / 2**20:.0f}", flush=True)
+          f"swap={args.swap} shift={args.shift} dense_shift={args.dense_shift} caches={len(caches)} "
+          f"allocated_mb={torch.cuda.memory_allocated() / 2**20:.0f}", flush=True)
 
     if args.check:
         check(adapter, dit, network, groups, train_items, rng, device, args)
@@ -293,7 +335,7 @@ def main() -> None:
         splice = LotSplice(adapter, layout, y_space=True)
         y0 = splice.to_y(x0)
         if sigma is None:
-            sigma = sample_sigmas(1, device)
+            sigma = sample_sigmas(1, device, shift=args.dense_shift if kind == "dense" else args.shift)
         sigma = torch.as_tensor(sigma, device=device, dtype=torch.float32).reshape(1)
         gen = None if noise_seed is None else torch.Generator(device=device).manual_seed(noise_seed)
         noise = torch.randn(y0.shape, device=device, generator=gen)

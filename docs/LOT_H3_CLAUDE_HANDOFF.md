@@ -203,6 +203,16 @@ Gate the GPU tests on `nvidia-smi` or `ps`, not on `scripts/lot/runs/day/pid`. T
 - **Phase 5:** `train_h3.py` (adapter + rank-16 LoRA on qkv/out/fc1/fc2, 200 modules; AdaLN, refiner, base, bank frozen). Loss `lot_h3_clean_loss` (eq. 17 with H3's `x0 − ε` head = velocity MSE in y-space). Data `cache_iso3d` stills with cached text (777 train / 24 held out). Layouts: 20% dense, uniform, detail mosaic of 4×4 super-cells. Started 2026-10-10 by the user (`LOT_H3_TRAIN=1`, 2,000 steps, `--save-every 500`, swap 4, ~2.7 s/step, ~1 h 40 min). Log `/tmp/lot_train_h3.log`, records `scripts/lot/runs/train_h3/log.jsonl`. Step-0 held-out eval: `dense=0.5199 uniform2=0.2700 mosaic=0.3874`.
 - **After training:** `render_h3.py --pairs … --trained scripts/lot/runs/train_h3 --variants dense,dense_lora,lot_fit,lot_trained` renders held-out prompts. `dense_lora` checks base drift.
 
+## Training context (2026-10-10)
+
+The how-to is `scripts/lot/README.md`, section "Training H3 for LoT from your own mp4s". It covers clip spec → Fizgig latent/text caching → Procrustes bank → `--check` → `train_h3.py` → `render_h3.py --trained`. Every command in it was run on this machine first.
+
+- **Run 1** (`scripts/lot/runs/train_h3`, done): 2,000 steps on 777 `cache_iso3d` stills, shift 12 everywhere, swap 4, 101 min. Held-out: dense 0.520 → 0.297, all-2×2 0.270 → 0.194, mosaic 0.387 → 0.262. Renders (`assets/lot-h3-trained-{bands,uniform2}.png`, issue 1 comment `6089145161`): frozen-model streaks and grid texture gone, coarse regions soft. Diagnosis: shift 12 puts 57% of steps at σ > 0.9 and only 3.5% below 0.3. The dense drop is mostly style learning (single-style data).
+- **Run 2** (`scripts/lot/runs/train_h3_shift3`, launched 2026-10-10): `--init runs/train_h3 --shift 3 --dense-shift 12`, same stills, 2,000 steps, swap 4. Log `/tmp/lot_train_h3_shift3.log`. Compare its renders with run 1's on the same held-out prompts.
+- **Clips:** the cut → cache path is verified on two 22-frame Nikki clips (`latent_7x24x40`). Clip `--check` OOMs at swap 4 and fits at swap 8 (20.0 GB peak, 13–17 s/step). No clip training has run: text caching for real clips needs Qwen (the user's call), and the 61 Nikki mp4s are portrait 480×640, so cut them at 384×640.
+- **Environments:** LoT scripts use the base `python3`. Fizgig cache scripts need Fizgig's requirements; on this machine use `~/miniconda3/envs/sdwebui/bin/python`. Base python lacks `toml`/`voluptuous`.
+- **Branches:** PR 2 is merged to `main`. Later work goes straight to `main`, as the user asked. Local `main` holds an unpushed commit of the user's, `dd76e49` (VFM docs, 5 Sep). It was deliberately not pushed; the LoT commits went up from branch `lot-train` with `git push origin lot-train:main`.
+
 ## Git
 
 Branch `lot-progress`, pushed through `af63e7b` and this doc update. `origin` is `https://github.com/johndpope/MiniMax-H3.git`. `upstream` is MiniMax-AI. Do not push upstream.

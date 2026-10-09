@@ -606,6 +606,24 @@ def test_train_layouts_tile_and_mix():
         assert _tile(1, 8, 8, lambda *_: extent).count == 64 // (extent[1] * extent[2])
 
 
+def test_train_shift_moves_mass_to_low_sigma():
+    import sys as _sys
+    fizgig = "/media/2TB/Fizgig/src"
+    if fizgig not in _sys.path:
+        _sys.path.insert(0, fizgig)
+    from fizgig.minimax.trainer import sample_sigmas
+    from train_h3 import parse_shift
+
+    assert parse_shift("12") == 12.0 and parse_shift("sigmoid") == "sigmoid"
+    assert parse_shift("lognorm:3") == "lognorm:3"
+    gen = torch.Generator().manual_seed(0)
+    h3 = sample_sigmas(20000, "cpu", shift=parse_shift("12"), generator=gen)
+    low = sample_sigmas(20000, "cpu", shift=parse_shift("3"), generator=gen)
+    assert float((h3 < 0.3).float().mean()) < 0.06            # H3's own: ~3.5% below 0.3
+    assert float((low < 0.3).float().mean()) > 0.10            # shift 3: several times more
+    assert float(low.median()) < float(h3.median())
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -632,6 +650,7 @@ def main():
         test_pair_rows_align_with_coarse_grid,
         test_h3_loss_is_velocity_mse_in_y_space,
         test_train_layouts_tile_and_mix,
+        test_train_shift_moves_mass_to_low_sigma,
     ]
     for test in tests:
         test()

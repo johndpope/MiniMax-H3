@@ -82,3 +82,101 @@ Phase 4 is `procrustes_h3.py --pairs DIR [--smoke] [--out FILE]`. `DIR` holds us
 A day-long synthetic run, still outside Separable Causal Diffusion, is the `lot-day` workflow: sanity checks, a 200-step probe, then training for `--minutes` (default 480). Checkpoints go to `scripts/lot/runs/`, which is gitignored.
 
 The tests cover partition rules, Procrustes, exact recovery of `eps - x0` when the asymmetric target is correct, pretrained-head parity on a dense layout, and the H3 patch round-trip. They do not load a 50-layer H3 checkpoint.
+
+## Training H3 for LoT from your own mp4s
+
+This trains the LoT adapter and a rank-16 LoRA on a frozen int8 H3 base (`train_h3.py`, phase 5). It runs on one 24 GB card. Each step below was run on this machine (RTX PRO 4000 Blackwell, 24 GB) before being written down.
+
+**What you need**
+
+- The pruned int8 DiT: `/media/2TB/Fizgig/models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` (the path is set in `procrustes_h3.py`).
+- The H3 video VAE: `/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors`.
+- The Qwen3-VL text encoder, for caching captions only: `/media/2TB/minimax-h3-nvfp4/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`.
+- Fizgig at `/media/2TB/Fizgig`, with LoT hooks on branch `immiscible-h3-noise`. Its cache scripts need Fizgig's requirements; on this machine the `sdwebui` conda env has them (`~/miniconda3/envs/sdwebui/bin/python`). The LoT scripts themselves run in the base `python3`.
+
+### 1. Cut clips to H3's spec
+
+Fizgig refuses off-spec clips instead of fixing them (`fizgig/minimax/clip.py`). The spec: `.mp4`, exactly 24 fps, a frame count on the 17n+5 grid, and both sides multiples of 32. Audio must be 32 kHz stereo, or no track at all. Train at **22 frames** (`latent_t = 7`), **640×384** landscape or **384×640** portrait. Both give a 12×20 token grid that every LoT extent tiles.
+
+```bash
+SRC=talk.mp4; OUT=/data/lot_clips; W=640; H=384   # use W=384 H=640 for portrait footage
+mkdir -p $OUT
+for start in 0 2 4 6 8; do                        # one 22-frame window every 2 s
+  ffmpeg -v error -y -ss $start -i "$SRC" \
+    -vf "fps=24,scale=$W:$H:force_original_aspect_ratio=increase,crop=$W:$H" \
+    -frames:v 22 -an -c:v libx264 -crf 16 -pix_fmt yuv420p \
+    "$OUT/$(basename "${SRC%.*}")_$(printf %03d $start)_mute.mp4"
+done
+```
+
+`-an` drops the audio, and the `_mute` suffix tells Fizgig the clip trains video only. `train_h3` does not train audio; it packs noised silence, as Fizgig does for stills. Write one caption per clip as a same-stem `.txt` next to it (`talk_000_mute.txt`). Captions are free text.
+
+### 2. Cache latents and text (Fizgig)
+
+```toml
+# /data/lot_clips/dataset.toml
+[general]
+resolution = [640, 384]
+batch_size = 1
+enable_bucket = true
+bucket_no_upscale = true
+caption_extension = ".txt"
+num_repeats = 1
+
+[[datasets]]
+image_directory = "/data/lot_clips"
+cache_directory = "/data/lot_clips/cache"
+```
+
+```bash
+PY=~/miniconda3/envs/sdwebui/bin/python
+cd /media/2TB/Fizgig
+$PY src/fizgig/scripts/minimax_cache_latents.py --dataset_config /data/lot_clips/dataset.toml \
+    --vae /media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors
+$PY src/fizgig/scripts/minimax_cache_text.py --dataset_config /data/lot_clips/dataset.toml \
+    --text_encoder /media/2TB/minimax-h3-nvfp4/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+```
+
+Each clip becomes `<stem>_0640x0384_minimaxh3.safetensors` with key `latent_7x24x40`, shape `(24, 7, 24, 40)`, plus `<stem>_minimaxh3_te.safetensors`. The text step is the only one that loads Qwen, in its own process. Run it alone on the GPU, never next to training.
+
+### 3. Fit the extent bank once
+
+```bash
+python3 scripts/lot/make_pairs_h3.py --src DIR_OF_CLIP_FOLDERS_WITH_comfy_t00.png   # or reuse the Nikki pairs
+python3 scripts/lot/procrustes_h3.py --pairs scripts/lot/runs/pairs_nikki_scrya_ref2va_768x1152
+```
+
+Every fit line must print `ok=1`. The bank (`A`, `s`) stays frozen during training. The existing Nikki pairs (`runs/pairs_nikki_scrya_ref2va_768x1152`) are a valid default.
+
+### 4. Dry-check memory, then train
+
+```bash
+P=scripts/lot/runs/pairs_nikki_scrya_ref2va_768x1152
+# forward + backward per layout kind, no optimizer step, writes nothing, no flag needed
+python3 scripts/lot/train_h3.py --pairs $P --cache /data/lot_clips/cache --swap 8 --shift 3 --check
+
+LOT_H3_TRAIN=1 python3 scripts/lot/train_h3.py --pairs $P \
+    --cache /data/lot_clips/cache \
+    --cache /media/2TB/lora-data/fizgig_minimax_h3/cache_iso3d \
+    --swap 8 --shift 3 --steps 2000 --save-every 500 \
+    --init scripts/lot/runs/train_h3 \
+    --out scripts/lot/runs/train_h3_clips
+```
+
+- `--cache` repeats. Mixing clips with stills of other styles stops the LoRA's style learning from masking LoT learning (see "What the first run showed").
+- **Memory, measured:** stills fit at `--swap 4` (20.5 GB peak, ~2.6 s/step). 22-frame clips OOM at `--swap 4` and fit at **`--swap 8`** (20.0 GB peak, 13–17 s/step). Always run `--check` with your exact flags first.
+- `--shift 3` sets the noise density for LoT steps; `--dense-shift` (default 12, H3's own) sets it for the 20% dense anchor steps. `--init` warm-starts from an earlier run's `adapter.pt` / `lora.safetensors` with a fresh optimizer.
+- Each step's loss is `lot_h3_clean_loss`, the paper's eq. 17 with H3's `x0 − ε` head. It equals Fizgig's velocity MSE taken in y-space. A held-out eval runs every 250 steps (dense, all-2×2, and mosaic layouts, plus mosaic error per extent) and goes to `log.jsonl`. Outputs go to `--out` (gitignored under `runs/`).
+
+### 5. Look at the result
+
+```bash
+python3 scripts/lot/render_h3.py --pairs $P --trained scripts/lot/runs/train_h3_clips --swap 4 \
+    --layout bands --variants dense,dense_lora,lot_fit,lot_trained
+```
+
+This renders the trainer's held-out prompts as same-seed stills. `dense_lora` shows what the LoRA alone did to the base. Compare `lot_trained` with it, not only with `dense`.
+
+### What the first run showed
+
+The first run was 2,000 steps on 777 isometric stills, shift 12 everywhere. Held-out loss went dense 0.520 → 0.297, all-2×2 0.270 → 0.194, mosaic 0.387 → 0.262. Most of the dense drop is style learning, since all the data shares one look. In renders, training removed the frozen model's streaks and grid texture, but the coarse regions came out soft (`assets/lot-h3-trained-*.png`). Shift 12 trains at σ > 0.9 for 57% of steps and below 0.3 for only 3.5%, which is where detail forms. Hence `--shift 3` for LoT steps (12.6% below 0.3, 25% above 0.9).
