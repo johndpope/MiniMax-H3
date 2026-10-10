@@ -10,7 +10,7 @@ Run everything from the repo root. One GPU job at a time; the scripts refuse to 
 
 | Where | How |
 |---|---|
-| **ComfyUI**, one image | Nodes in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) + [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json). See [ComfyUI](#comfyui-t1-image) below. |
+| **ComfyUI**, still or video | Nodes in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) + [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json) / [`comfyui/h3_lot_video_api.json`](../../comfyui/h3_lot_video_api.json). See [ComfyUI](#comfyui-stills-and-video) below. |
 | **Python / Fizgig** | `hf download johndpope/MiniMax-H3-LoT --local-dir runs/lot_hf`, then `render_h3.py --trained runs/lot_hf/run4_nikki_distill ...` (step 5). |
 
 Best checkpoint so far: **`run4_nikki_distill`** (see [Runs so far](#runs-so-far)).
@@ -94,9 +94,14 @@ python3 scripts/lot/bench_h3.py          # 37-frame 768x1344 DiT timing, dense v
 python3 scripts/lot/time_decode_h3.py    # VAE decode (LoT does not speed this up)
 ```
 
-## ComfyUI (T=1 image)
+## ComfyUI (stills and video)
 
-The LoT nodes live in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane): **MiniMax H3 LoT Apply** (layouts `center` / `bands` / `uniform2` / `uniform4` / `dense`) and **MiniMax H3 LoT Unscale Latent**, which is required before VAE Decode. Workflow: [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json) (API format; it also ships in the pack's `workflows/`). It renders a LoT branch and a dense A/B branch from one prompt.
+The LoT nodes live in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane): **MiniMax H3 LoT Apply** (layouts `center` / `bands` / `uniform2` / `uniform4` / `dense`) and **MiniMax H3 LoT Unscale Latent**, which is required before VAE Decode. Workflows (API format; they also ship in the pack's `workflows/`), each a LoT branch plus a dense A/B branch from one seed:
+
+- [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json): 768×1152 still, image VAE.
+- [`comfyui/h3_lot_video_api.json`](../../comfyui/h3_lot_video_api.json): 512×768, 22-frame clip from the stock **MiniMax H3 Image to Video** node (t2va; add `first_frame` for i2va), video VAE, animated WebP.
+
+LoT Apply works for any target length: the layout repeats per latent frame, and keyframe and reference rows stay dense.
 
 ```bash
 hf download johndpope/MiniMax-H3-LoT run4_nikki_distill/adapter.safetensors run4_nikki_distill/lora.safetensors --local-dir /tmp/lot
@@ -104,7 +109,7 @@ cp /tmp/lot/run4_nikki_distill/adapter.safetensors ComfyUI/models/lot/run4_nikki
 cp /tmp/lot/run4_nikki_distill/lora.safetensors    ComfyUI/models/loras/minimax_h3_lot_run4_nikki_lora.safetensors
 ```
 
-Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (relative error 0 with ComfyUI's bf16 head weights). On a 768×1152 still, `center` (300 of 864 tokens) ran at 5.6 it/s against 4.1 it/s dense. The output is visibly softer than dense: **research weights, more training wanted** ([Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183)).
+Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (relative error 0 with ComfyUI's bf16 head weights). `center` ran at 5.6 vs 4.1 it/s on a 768×1152 still (1.35×) and **3.45 vs 1.33 it/s on a 22-frame 512×768 clip (2.6×)**. The output is visibly softer than dense: **research weights, more training wanted** ([Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183)).
 
 ## Flags that matter
 
@@ -130,6 +135,7 @@ Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (rela
 | DiT forward, 37-frame 768×1344 (48 blocks streamed) | dense 53.9 s · LoT 20.7 s · **2.61×** (re-measured, 0 allocator retries; first run 2.64×) |
 | DiT forward, 768×1152 still, all resident, run-4 adapter + LoRA | dense 0.81 s · bands 0.47 s (**1.75×**) · all-2×2 0.36 s (**2.29×**); LoRA costs ~1% |
 | ComfyUI sampler, 768×1152 still, `center` (300/864 tokens) | 5.6 it/s vs dense 4.1 it/s (1.35×; Comfy's fused kernels make dense steps fast) |
+| ComfyUI sampler, 512×768 22-frame clip, `center` | 3.45 it/s vs dense 1.33 it/s (**2.6×**) |
 | 20-step 37-frame clip, end to end (sum of measured parts) | dense ~1,110 s · LoT ~446 s · ~2.5× incl. the 31.8 s decode |
 | VAE decode, 37 latent frames | 31.8 s, same with or without LoT |
 | Train step | stills ~2.7 s (swap 4) · 22-frame clips 13–17 s (swap 8) |
