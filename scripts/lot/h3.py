@@ -131,3 +131,51 @@ def clip_layout(frames: int, height: int = 24, width: int = 42):
         for rect in frame.rects
     ]
     return layout_from_rects(frames, height, width, rects)
+
+
+GRID_LAYOUTS = ("dense", "bands", "center", "uniform2", "uniform4")
+
+
+def grid_layout(name: str, time: int, height: int, width: int):
+    """A LoT layout for any token grid, in 4×4 super-cells; edge leftovers stay 1×1.
+
+    ``bands``: top third 1×1, middle 2×2, bottom 4×2 (by super-cell row).
+    ``center``: 1×1 near the middle, 2×2 around it, 4×4 at the edges; meant for
+    portraits and talking heads, where the face sits in the middle.
+    ``uniformN``: every full super-cell N×N. ``dense``: all 1×1.
+    """
+    if name not in GRID_LAYOUTS:
+        raise ValueError(f"layout {name!r} is not one of {GRID_LAYOUTS}")
+    if name == "dense":
+        from layout import dense_layout   # raster order: bit-identical to the stock dense forward
+        return dense_layout(time, height, width)
+    rows, cols = height // 4, width // 4
+
+    def extent(cell_u: int, cell_v: int) -> tuple[int, int, int]:
+        if name == "dense":
+            return (1, 1, 1)
+        if name == "uniform2":
+            return (1, 2, 2)
+        if name == "uniform4":
+            return (1, 4, 4)
+        if name == "bands":
+            third = cell_u * 3 // max(rows, 1)
+            return ((1, 1, 1), (1, 2, 2), (1, 4, 2))[min(third, 2)]
+        du = (cell_u + 0.5) / max(rows, 1) - 0.5
+        dv = (cell_v + 0.5) / max(cols, 1) - 0.5
+        radius = (du * du + dv * dv) ** 0.5 / 0.7071
+        return (1, 1, 1) if radius < 0.35 else (1, 2, 2) if radius < 0.7 else (1, 4, 4)
+
+    rects = []
+    for t in range(time):
+        for u in range(height):
+            for v in range(width):
+                if u >= rows * 4 or v >= cols * 4:
+                    rects.append(TokenRect(t, u, v, 1, 1, 1))     # edge leftovers
+        for cu in range(rows):
+            for cv in range(cols):
+                _et, eh, ew = extent(cu, cv)
+                for u in range(cu * 4, cu * 4 + 4, eh):
+                    for v in range(cv * 4, cv * 4 + 4, ew):
+                        rects.append(TokenRect(t, u, v, 1, eh, ew))
+    return layout_from_rects(time, height, width, rects)

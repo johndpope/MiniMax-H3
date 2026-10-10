@@ -129,13 +129,41 @@ def recover_dense_velocity(
         raise ValueError(f"u_a shape {tuple(u_a.shape)} != x_t shape {tuple(x_t.shape)}")
     if basis.ndim != 2 or basis.shape[0] != u_a.shape[-1]:
         raise ValueError("basis must be (D_e, D) for this patch")
-    calibration_cls, kernel_cls, _path = _asymflow()
     sigma_t = _broadcast_sigma(sigma, u_a)
     basis_f = basis.detach().to(device=u_a.device, dtype=torch.float32)
+    if os.environ.get("LOT_NO_LAKONLAB") == "1":
+        return asymflow_velocity_torch(u_a, x_t, basis_f, sigma_t).to(dtype=u_a.dtype)
+    try:
+        calibration_cls, kernel_cls, _path = _asymflow()
+    except FileNotFoundError:
+        # No LakonLab checkout (for example inside ComfyUI): the same s = k = 1 arithmetic.
+        return asymflow_velocity_torch(u_a, x_t, basis_f, sigma_t).to(dtype=u_a.dtype)
     ones = torch.ones((), device=u_a.device, dtype=torch.float32)
     calibration = calibration_cls(s=ones, k=ones, timestep=ones, sigma=sigma_t)
     recovered = kernel_cls(basis_f).asymflow_velocity(u_a, x_t, calibration)
     return recovered.to(dtype=u_a.dtype)
+
+
+def asymflow_velocity_torch(
+    u_a: torch.Tensor,
+    x_t: torch.Tensor,
+    basis: torch.Tensor,
+    sigma: torch.Tensor,
+    sigma_min: float = 1e-6,
+) -> torch.Tensor:
+    """LakonLab ``asymflow_velocity`` with ``s = k = 1``, in plain torch (eq. 9).
+
+    ``sub(v) = v A A^T`` and ``comp(v) = v - sub(v)``; the result is
+    ``sub(u_a) + (comp(x_t) + comp(u_a)) / max(sigma, sigma_min)``. Matches the
+    kernel's training-mode ``sigma_min``, which is what ``_VelocityKernel`` sets.
+    """
+    u = u_a.float()
+    x = x_t.float()
+    projector = basis @ basis.T
+    u_sub = u @ projector
+    x_sub = x @ projector
+    sig = sigma.float().clamp(min=sigma_min)
+    return u_sub + ((x - x_sub) + (u - u_sub)) / sig
 
 
 def _broadcast_sigma(sigma: torch.Tensor | float, like: torch.Tensor) -> torch.Tensor:

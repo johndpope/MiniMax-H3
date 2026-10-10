@@ -23,6 +23,30 @@ import torch
 LICENSE_LINK = "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE"
 CODE = "https://github.com/johndpope/MiniMax-H3/tree/main/scripts/lot"
 ISSUE = "https://github.com/johndpope/MiniMax-H3/issues/1"
+HELP = "https://github.com/shootthesound/Fizgig/discussions/183"
+# Section III.4 of the H3 Community License: every distribution carries this NOTICE text.
+NOTICE = ("MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, "
+          "Copyright © 2026 MiniMax. All Rights Reserved.\n\n"
+          "The files in this repository (adapter.safetensors, lora.safetensors) are modifications derived "
+          "from MiniMax H3 weights: a Level-of-Token adapter and a rank-16 LoRA trained on the MiniMax H3 "
+          "FL2VA DiT. They are not released or endorsed by MiniMax.\n")
+
+
+def warnings(repo: str) -> str:
+    """Help-wanted, license/territory and data notes at the top of every card."""
+    base = f"https://huggingface.co/{repo}/blob/main"
+    return f"""> [!WARNING]
+> # ⚠️ THIS MODEL NEEDS MORE TRAINING — HELP WANTED
+> **These are research checkpoints, not a finished model.** LoT output is still visibly worse than dense MiniMax H3: coarse regions are soft, faces in talking-head shots distort, and the LoRA can bend bodies even with LoT off. If you have GPU time, data, or ideas, join the discussion: **[shootthesound/Fizgig discussions #183]({HELP})**.
+
+> [!CAUTION]
+> **License and territory.** Derived from MiniMax H3 under the [MiniMax H3 Community License Agreement]({base}/LICENSE) (see also [`NOTICE`]({base}/NOTICE)). That license allows use and redistribution **only outside its Excluded Territories: the European Union, the United Kingdom, the Republic of Korea and the United States of America.** Do not download or use these files there. Commercial use above US$20M yearly revenue needs MiniMax's written authorization. The [Acceptable Use Policy]({base}/LICENSE) applies, including: no impersonation without consent, and machine-generated output must be disclosed as such.
+
+> [!NOTE]
+> **Training data.** Check the Training section below for what this run saw. Do not use these weights to impersonate anyone.
+
+**Train it yourself / help improve it:** [cheatsheet]({CODE}/CHEATSHEET.md) · [train from your own mp4s]({CODE}/README.md#training-h3-for-lot-from-your-own-mp4s) · [results and renders (issue 1)]({ISSUE})
+"""
 
 
 def eval_table(log_path: Path) -> str:
@@ -41,7 +65,7 @@ def model_card(repo: str, title: str, settings: str, table: str) -> str:
     return f"""---
 license: other
 license_name: minimax-h3-community-license
-license_link: {LICENSE_LINK}
+license_link: LICENSE
 base_model: MiniMaxAI/MiniMax-H3
 tags:
 - level-of-token
@@ -51,6 +75,8 @@ tags:
 ---
 
 # MiniMax-H3 Level-of-Token adapter: {title}
+
+{warnings(repo)}
 
 Research weights for running **MiniMax-H3**'s DiT on a **Level-of-Token (LoT)** layout: fewer, larger tokens where detail is low, with the full-resolution velocity recovered afterwards ([Nakayama et al., arXiv 2610.05816](https://arxiv.org/abs/2610.05816)). The VAE latent stays full size; only the transformer sequence shrinks. On one 24 GB card a 37-frame 768×1344 DiT forward measured 51.9 s dense vs 19.6 s LoT (2.64×). The VAE decode is unchanged.
 
@@ -127,6 +153,15 @@ def main() -> None:
 
     api = HfApi()
     api.create_repo(args.repo, private=not args.public, exist_ok=True)
+    # The license copy and NOTICE are repo-level (Section III.1 and III.4); upload them every time.
+    license_path = stage / "LICENSE"
+    from huggingface_hub import hf_hub_download
+    shutil.copy2(hf_hub_download("MiniMaxAI/MiniMax-H3", "LICENSE"), license_path)
+    (stage / "NOTICE").write_text(NOTICE)
+    for name in ("LICENSE", "NOTICE"):
+        api.upload_file(path_or_fileobj=str(stage / name), path_in_repo=name, repo_id=args.repo,
+                        commit_message=f"{name} (MiniMax H3 Community License, Section III)")
+        (stage / name).unlink()
     api.upload_folder(repo_id=args.repo, folder_path=str(stage), path_in_repo=args.subfolder or None,
                       commit_message=f"LoT adapter + LoRA: {args.title}")
     sizes = {p.name: p.stat().st_size for p in stage.iterdir()}

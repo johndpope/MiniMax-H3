@@ -624,6 +624,39 @@ def test_train_shift_moves_mass_to_low_sigma():
     assert float(low.median()) < float(h3.median())
 
 
+def test_torch_eq9_matches_lakonlab():
+    from flow import _broadcast_sigma, asymflow_velocity_torch
+
+    torch.manual_seed(10)
+    basis = torch.linalg.qr(torch.randn(16, 4), mode="reduced").Q
+    u_a = torch.randn(3, 5, 16)
+    x_t = torch.randn(3, 5, 16)
+    for sigma in (0.05, torch.tensor([0.2, 0.5, 0.9])):
+        lakon = recover_dense_velocity(u_a, x_t, basis, sigma)
+        plain = asymflow_velocity_torch(u_a, x_t, basis, _broadcast_sigma(sigma, u_a))
+        assert torch.allclose(lakon, plain, atol=1e-5)
+
+
+def test_grid_layouts_any_shape():
+    from h3 import GRID_LAYOUTS, grid_layout
+
+    for height, width in ((36, 24), (19, 30), (24, 42), (12, 20)):
+        for name in GRID_LAYOUTS:
+            layout = grid_layout(name, 1, height, width)
+            assert layout.dense_count == height * width
+            if name == "dense":
+                assert layout.count == layout.dense_count
+            else:
+                assert layout.count < layout.dense_count
+    center = grid_layout("center", 1, 36, 24)
+    middle = [r.extent for r in center.rects if 16 <= r.u < 20 and 8 <= r.v < 16]
+    corner = [r.extent for r in center.rects if r.u < 4 and r.v < 4]
+    assert set(middle) == {(1, 1, 1)} and set(corner) == {(1, 4, 4)}
+    bands = grid_layout("bands", 1, 36, 24)
+    assert {r.extent for r in bands.rects if r.u < 12} == {(1, 1, 1)}
+    assert {r.extent for r in bands.rects if r.u >= 24} == {(1, 4, 2)}
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -651,6 +684,8 @@ def main():
         test_h3_loss_is_velocity_mse_in_y_space,
         test_train_layouts_tile_and_mix,
         test_train_shift_moves_mass_to_low_sigma,
+        test_torch_eq9_matches_lakonlab,
+        test_grid_layouts_any_shape,
     ]
     for test in tests:
         test()

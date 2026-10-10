@@ -1,5 +1,7 @@
 # Level-of-Token on H3: cheatsheet
 
+> **⚠️ Research checkpoints: LoT output is still worse than dense H3, and it needs more training. Help wanted: [Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183).** Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA).
+
 LoT gives the H3 DiT fewer, larger tokens where detail is low, then recovers the full-resolution velocity (Nakayama et al., [arXiv 2610.05816](https://arxiv.org/abs/2610.05816)). The VAE latent stays full size; only the transformer sequence shrinks. Full walkthrough: [README → Training H3 for LoT from your own mp4s](README.md#training-h3-for-lot-from-your-own-mp4s). Results and history: [issue 1](https://github.com/johndpope/MiniMax-H3/issues/1).
 
 Run everything from the repo root. One GPU job at a time; the scripts refuse to start beside another one and never kill it.
@@ -70,6 +72,18 @@ python3 scripts/lot/render_h3.py --pairs $P --trained scripts/lot/runs/my_run --
 python3 scripts/lot/bench_h3.py          # 37-frame 768x1344 DiT timing, dense vs LoT
 python3 scripts/lot/time_decode_h3.py    # VAE decode (LoT does not speed this up)
 ```
+
+## ComfyUI (T=1 image)
+
+The LoT nodes live in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane): **MiniMax H3 LoT Apply** (layouts `center` / `bands` / `uniform2` / `uniform4` / `dense`) and **MiniMax H3 LoT Unscale Latent**, which is required before VAE Decode. Workflow: [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json) (API format; it also ships in the pack's `workflows/`). It renders a LoT branch and a dense A/B branch from one prompt.
+
+```bash
+hf download johndpope/MiniMax-H3-LoT run4_nikki_distill/adapter.safetensors run4_nikki_distill/lora.safetensors --local-dir /tmp/lot
+cp /tmp/lot/run4_nikki_distill/adapter.safetensors ComfyUI/models/lot/run4_nikki_distill_adapter.safetensors
+cp /tmp/lot/run4_nikki_distill/lora.safetensors    ComfyUI/models/loras/minimax_h3_lot_run4_nikki_lora.safetensors
+```
+
+Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (relative error 0 with ComfyUI's bf16 head weights). On a 768×1152 still, `center` (300 of 864 tokens) ran at 5.6 it/s against 4.1 it/s dense. The output is visibly softer than dense: **research weights, more training wanted** ([Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183)).
 
 ## Flags that matter
 
