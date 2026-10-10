@@ -137,6 +137,18 @@ The LoT nodes live in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpo
 
 LoT Apply works for any target length: the layout repeats per latent frame, and keyframe and reference rows stay dense.
 
+**Content-aware layouts** (the paper's layout sources), each feeding LoT Apply's `layout_override`:
+
+| Node | Fine tokens go | Use for |
+|---|---|---|
+| LoT Layout from **Boxes** | inside normalised `x0,y0,x1,y1` boxes (secondary boxes → 2×2) | faces and subjects in portraits and talking heads |
+| LoT Layout from **Mask** | on a MASK, per frame when it is a batch (tracked object) | segmented subjects |
+| LoT Layout from **Depth** | near a focus depth (Depth Anything map) | depth-of-field shots |
+| LoT Layout from **Texture** | where an image is busy (i2v first frame, or a quick dense preview) | scenery, two-pass t2v |
+| LoT Layout **Preview** | draws the layout and logs the compression | checking a layout before sampling |
+
+[`comfyui/h3_lot_boxes_api.json`](../../comfyui/h3_lot_boxes_api.json): face box 1×1, shoulders 2×2, rest 4×4 on the held-out talk prompt. **It came out nearly identical to dense** (576/864 tokens, 1.5×), where the fixed `center` layout blurred and blocked the face. Tighter boxes give more speed for some quality.
+
 ```bash
 hf download johndpope/MiniMax-H3-LoT run4_nikki_distill/adapter.safetensors run4_nikki_distill/lora.safetensors --local-dir /tmp/lot
 cp /tmp/lot/run4_nikki_distill/adapter.safetensors ComfyUI/models/lot/run4_nikki_distill_adapter.safetensors
@@ -161,6 +173,7 @@ Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (rela
 | `--rank` | 16 | LoRA rank on qkv / out / fc1 / fc2 × 50 blocks (200 modules). |
 | `--max-latent-hw H W` | none | Random spatial crop cap (latent px, multiples of 8) for clips too big to train whole. |
 | `--holdout N` | 24 | Held-out items per cache. Pass the same value to `render_h3.py --holdout`. |
+| `--layout-mix` | `uniform:0.1,mosaic:0.15,box:0.2,focus:0.2,texture:0.15` | Non-dense layout families per step (dense is `--dense-p`). `box` / `focus` / `texture` change per latent frame like the paper's mask, depth and texture layouts. `mosaic:1` reproduces runs 1–4. Evals add a fixed `focus` layout and `gap_focus`. |
 
 ## Measured on one 24 GB card (RTX PRO 4000 Blackwell)
 

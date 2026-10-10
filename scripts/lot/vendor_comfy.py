@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MODULES = ("layout", "flow", "adapter", "h3", "h3_positions", "h3_splice")
+MODULES = ("layout", "flow", "adapter", "h3", "h3_positions", "h3_splice", "layout_sources")
 HERE = Path(__file__).resolve().parent
 
 

@@ -597,7 +597,20 @@ def test_train_layouts_tile_and_mix():
         kinds.setdefault(kind, layout)
         assert layout.dense_count == 16 * 28 and layout.count <= layout.dense_count
         assert {rect.extent for rect in layout.rects} <= set(H3_EXTENTS)
-    assert set(kinds) == {"dense", "uniform", "mosaic"}
+    assert {"dense", "uniform", "mosaic", "box", "focus", "texture"} <= set(kinds) | {"mosaic"}
+    for name in ("dense", "uniform", "mosaic", "box", "focus", "texture"):
+        layout, kind = sample_layout(latent, _random.Random(1), force=name)
+        assert kind == name and layout.dense_count == 16 * 28
+        assert {rect.extent for rect in layout.rects} <= set(H3_EXTENTS)
+    clip = torch.randn(1, 24, 7, 32, 56)
+    moving, _ = sample_layout(clip, _random.Random(3), force="box")
+    per_frame = [frozenset((r.u, r.v) for r in moving.rects if r.t == t and r.extent == (1, 1, 1)) for t in range(7)]
+    assert len(set(per_frame)) > 1                          # the box drifts across latent frames
+    from train_h3 import _legacy_mosaic, parse_mix
+    assert sample_layout(latent, _random.Random(5), force="eval_mosaic")[0] == _legacy_mosaic(latent, _random.Random(5), 0.0)[0]
+    assert parse_mix("box:0.5,focus:0.5") == {"box": 0.5, "focus": 0.5}
+    mosaic = sample_layout(latent, _random.Random(11), force="mosaic")[0]
+    kinds["mosaic"] = mosaic
     mosaic = kinds["mosaic"]
     assert len({rect.extent for rect in mosaic.rects}) > 1
     corner = {rect.extent for rect in mosaic.rects if rect.u < 4 and rect.v < 4}
@@ -657,6 +670,44 @@ def test_grid_layouts_any_shape():
     assert {r.extent for r in bands.rects if r.u >= 24} == {(1, 4, 2)}
 
 
+def test_layout_sources():
+    from layout_sources import (boxes_to_mask, compression, depth_layout, latent_frame_spans,
+                                layout_from_desired_any, mask_layout, texture_layout, to_latent_frames)
+
+    assert latent_frame_spans(7)[-1][1] == 22 and latent_frame_spans(1) == [(0, 1)]
+    # mask: box in the middle of a 768x512 still -> fine inside, coarse outside
+    mask = boxes_to_mask([(0.375, 0.375, 0.625, 0.625)], 768, 512)
+    lay = mask_layout(mask, 1, 24, 16, dilate=0)
+    inside = {r.extent for r in lay.rects if 10 <= r.u < 14 and 7 <= r.v < 9}
+    corner = {r.extent for r in lay.rects if r.u < 4 and r.v < 4}
+    assert inside == {(1, 1, 1)} and corner == {(1, 4, 4)}
+    assert lay.dense_count == 24 * 16 and 1.0 < compression(lay) < 16
+    # a moving box over 22 pixel frames -> the layout changes per latent frame
+    frames = torch.zeros(22, 768, 512)
+    for f in range(22):
+        x = 0.1 + 0.6 * f / 21
+        frames[f] = boxes_to_mask([(x, 0.4, x + 0.2, 0.6)], 768, 512)[0]
+    moving = mask_layout(frames, 7, 24, 16, dilate=0)
+    first = {(r.u, r.v) for r in moving.rects if r.t == 0 and r.extent == (1, 1, 1)}
+    last = {(r.u, r.v) for r in moving.rects if r.t == 6 and r.extent == (1, 1, 1)}
+    assert first and last and first != last
+    # depth: in-focus band fine, far plane coarse
+    depth = torch.linspace(0, 1, 768)[:, None].expand(768, 512)
+    dl = depth_layout(depth, 1, 24, 16, focus=1.0, band=0.15)
+    assert {r.extent for r in dl.rects if r.u >= 22} == {(1, 1, 1)}
+    assert (1, 4, 4) in {r.extent for r in dl.rects if r.u < 8}
+    # texture: noisy half fine, flat half coarse
+    image = torch.zeros(1, 768, 512, 3)
+    image[:, :, :256] = torch.rand(1, 768, 256, 3)
+    tl = texture_layout(image, 1, 24, 16, fine_q=0.5, mid_q=0.3)
+    assert {r.extent for r in tl.rects if r.v < 6} == {(1, 1, 1)}
+    assert (1, 4, 4) in {r.extent for r in tl.rects if r.v >= 10}
+    # odd grids: edges stay 1x1 and every token is covered exactly once
+    odd = layout_from_desired_any(torch.full((2, 19, 30), 4))
+    assert odd.dense_count == 2 * 19 * 30
+    assert to_latent_frames(torch.rand(5, 3, 3), 2).shape == (2, 3, 3)
+
+
 def main():
     tests = [
         test_shape_and_centers,
@@ -686,6 +737,7 @@ def main():
         test_train_shift_moves_mass_to_low_sigma,
         test_torch_eq9_matches_lakonlab,
         test_grid_layouts_any_shape,
+        test_layout_sources,
     ]
     for test in tests:
         test()

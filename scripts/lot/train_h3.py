@@ -155,19 +155,118 @@ def token_detail(latent: torch.Tensor) -> torch.Tensor:
     return (grid - coarse).norm(dim=1)
 
 
-def sample_layout(latent: torch.Tensor, rng: random.Random, dense_p: float = 0.2) -> tuple[LotLayout, str]:
+DEFAULT_MIX = {"uniform": 0.10, "mosaic": 0.15, "box": 0.20, "focus": 0.20, "texture": 0.15}
+
+
+def parse_mix(text: str) -> dict[str, float]:
+    """``"box:0.3,focus:0.2"`` -> weights for the non-dense layout families."""
+    mix = {}
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        name, _, weight = part.partition(":")
+        if name not in DEFAULT_MIX:
+            raise ValueError(f"unknown layout family {name!r}; choose from {sorted(DEFAULT_MIX)}")
+        mix[name] = float(weight)
+    return mix
+
+
+def _box_desired(time: int, height: int, width: int, rng: random.Random) -> torch.Tensor:
+    """1-2 primary boxes drifting across frames, an optional secondary box; the paper's mask/bbox family."""
+    from layout_sources import desired_from_levels
+
+    background = rng.choice((2, 4))
+    fine = torch.zeros(time, height, width, dtype=torch.bool)
+    mid = torch.zeros_like(fine)
+
+    def box(target: torch.Tensor, size_lo: float, size_hi: float) -> None:
+        bh, bw = rng.uniform(size_lo, size_hi), rng.uniform(size_lo, size_hi)
+        y, x = rng.uniform(0, 1 - bh), rng.uniform(0, 1 - bw)
+        dy, dx = rng.uniform(-0.2, 0.2), rng.uniform(-0.2, 0.2)
+        for t in range(time):
+            f = t / max(time - 1, 1)
+            yy = min(max(y + dy * f, 0.0), 1 - bh)
+            xx = min(max(x + dx * f, 0.0), 1 - bw)
+            u0, v0 = int(yy * height), int(xx * width)
+            target[t, u0:max(int((yy + bh) * height), u0 + 1), v0:max(int((xx + bw) * width), v0 + 1)] = True
+
+    for _ in range(rng.choice((1, 1, 2))):
+        box(fine, 0.2, 0.55)
+    if rng.random() < 0.5:
+        box(mid, 0.3, 0.8)
+    return desired_from_levels(fine, mid, background)
+
+
+def _focus_desired(time: int, height: int, width: int, rng: random.Random) -> torch.Tensor:
+    """An in-focus ellipse (1×1), a 2×2 ring, coarse outside; the depth-of-field family."""
+    from layout_sources import desired_from_levels
+
+    cy, cx = rng.uniform(0.25, 0.75), rng.uniform(0.25, 0.75)
+    ry, rx = rng.uniform(0.15, 0.4), rng.uniform(0.15, 0.4)
+    ring = rng.uniform(1.4, 2.2)
+    dy, dx = rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1)
+    uu = (torch.arange(height).float() + 0.5) / height
+    vv = (torch.arange(width).float() + 0.5) / width
+    radius = []
+    for t in range(time):
+        f = t / max(time - 1, 1)
+        r = (((uu[:, None] - cy - dy * f) / ry) ** 2 + ((vv[None, :] - cx - dx * f) / rx) ** 2).sqrt()
+        radius.append(r)
+    radius = torch.stack(radius)
+    return desired_from_levels(radius <= 1.0, radius <= ring, rng.choice((2, 4)))
+
+
+def sample_layout(latent: torch.Tensor, rng: random.Random, dense_p: float = 0.2,
+                  mix: dict[str, float] | None = None, force: str | None = None) -> tuple[LotLayout, str]:
     """A layout for one example and its kind.
 
     ``dense``: all 1×1. ``uniform``: one extent everywhere. ``mosaic``: each 4×4
-    super-cell takes one extent, finer where the clean latent has more detail,
-    with jittered thresholds, so mixed boundaries and rectangles both appear.
+    super-cell takes one extent, finer where the clean latent has more detail.
+    Content families from the LoT supplementary, all changing per latent frame:
+    ``box`` (drifting primary/secondary boxes, the mask/bbox source), ``focus``
+    (an in-focus ellipse, the depth-of-field source) and ``texture`` (per-frame
+    quantiles of the clean latent's detail, the VRS source). ``mix`` weights the
+    non-dense families (default ``DEFAULT_MIX``). ``force="eval_mosaic"`` is the
+    exact held-out layout used by every eval so far (kept for comparable curves).
     """
+    _b, _c, time, lat_h, lat_w = latent.shape
+    height, width = lat_h // 2, lat_w // 2
+    if force == "eval_mosaic":
+        return _legacy_mosaic(latent, rng, 0.0)
+    if force is None:
+        if rng.random() < dense_p:
+            return dense_layout(time, height, width), "dense"
+        weights = mix or DEFAULT_MIX
+        names = [n for n, w in weights.items() if w > 0]
+        force = rng.choices(names, weights=[weights[n] for n in names])[0]
+    if force == "dense":
+        return dense_layout(time, height, width), "dense"
+    if force == "uniform":
+        extent = rng.choice(MID + COARSE)
+        return _tile(time, height, width, lambda _t, _u, _v: extent), "uniform"
+    if force == "mosaic":
+        return _legacy_mosaic(latent, rng, 0.0, uniform_p=0.0)
+    from layout_sources import layout_from_desired_any, score_layout
+
+    if force == "box":
+        return layout_from_desired_any(_box_desired(time, height, width, rng)), "box"
+    if force == "focus":
+        return layout_from_desired_any(_focus_desired(time, height, width, rng)), "focus"
+    if force == "texture":
+        fine_q = rng.uniform(0.5, 0.85)
+        layout = score_layout(token_detail(latent).cpu(), fine_q=fine_q,
+                              mid_q=max(0.0, fine_q - rng.uniform(0.15, 0.35)), background=rng.choice((2, 4)))
+        return layout, "texture"
+    raise ValueError(f"unknown layout family {force!r}")
+
+
+def _legacy_mosaic(latent: torch.Tensor, rng: random.Random, dense_p: float,
+                   uniform_p: float = 0.15) -> tuple[LotLayout, str]:
+    """The original sampler (runs 1-4): dense / uniform / detail mosaic of 4×4 super-cells."""
     _b, _c, time, lat_h, lat_w = latent.shape
     height, width = lat_h // 2, lat_w // 2
     roll = rng.random()
     if roll < dense_p:
         return dense_layout(time, height, width), "dense"
-    if roll < dense_p + 0.15:
+    if roll < dense_p + uniform_p:
         extent = rng.choice(MID + COARSE)
         return _tile(time, height, width, lambda _t, _u, _v: extent), "uniform"
     detail = token_detail(latent).cpu()
@@ -225,12 +324,9 @@ def check(adapter, dit, network, groups, items, rng, device, args) -> None:
     from fizgig.minimax.trainer import sample_sigmas
 
     params = [p for g in groups for p in g["params"]]
-    for kind_wanted in ("dense", "mosaic", "uniform"):
-        for _ in range(50):
-            x0, text = load_item(rng.choice(items), rng, device)
-            layout, kind = sample_layout(x0, rng, args.dense_p)
-            if kind == kind_wanted:
-                break
+    for kind_wanted in ("dense", "box", "focus", "texture", "mosaic", "uniform"):
+        x0, text = load_item(rng.choice(items), rng, device)
+        layout, kind = sample_layout(x0, rng, force=kind_wanted)
         splice = LotSplice(adapter, layout, y_space=True)
         y0 = splice.to_y(x0)
         sigma = sample_sigmas(1, device, shift=args.dense_shift if kind == "dense" else args.shift)
@@ -291,6 +387,9 @@ def main() -> None:
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--swap", type=int, default=4, help="blocks streamed from CPU; >0 turns on checkpointing")
     parser.add_argument("--dense-p", type=float, default=0.2)
+    parser.add_argument("--layout-mix", type=parse_mix, default=None,
+                        help="weights of non-dense layout families, e.g. box:0.3,focus:0.3,texture:0.2,mosaic:0.1,"
+                             "uniform:0.1 (default: DEFAULT_MIX; 'mosaic' alone reproduces runs 1-4)")
     parser.add_argument("--holdout", type=int, default=24)
     parser.add_argument("--eval-every", type=int, default=250)
     parser.add_argument("--save-every", type=int, default=0, help="0 = save only at the end")
@@ -399,7 +498,7 @@ def main() -> None:
     def step_loss(item, item_rng, *, layout=None, sigma=None, noise_seed=None, with_teacher=False):
         x0, text = load_item(item, item_rng, device)
         if layout is None:
-            layout, kind = sample_layout(x0, item_rng, args.dense_p)
+            layout, kind = sample_layout(x0, item_rng, args.dense_p, args.layout_mix)
         else:
             kind = "fixed"
         splice = LotSplice(adapter, layout, y_space=True)
@@ -426,11 +525,12 @@ def main() -> None:
 
     def evaluate(step: int) -> None:
         network.eval()
-        results = {"dense": [], "uniform2": [], "mosaic": [], "gap_uniform2": [], "gap_mosaic": []}
+        results = {"dense": [], "uniform2": [], "mosaic": [], "focus": [],
+                   "gap_uniform2": [], "gap_mosaic": [], "gap_focus": []}
         per_extent: dict[str, list] = {}
         with torch.no_grad():
             for index, item in enumerate(held_items):
-                for kind in ("dense", "uniform2", "mosaic"):
+                for kind in ("dense", "uniform2", "mosaic", "focus"):
                     item_rng = random.Random(1000 + index)
                     x0, _text = load_item(item, random.Random(1000 + index), device)
                     _b, _c, tt, hh, ww = x0.shape
@@ -439,7 +539,9 @@ def main() -> None:
                     elif kind == "uniform2":
                         layout = _tile(tt, hh // 2, ww // 2, lambda *_: (1, 2, 2))
                     else:
-                        layout, _ = sample_layout(x0, random.Random(2000 + index), dense_p=0.0)
+                        layout, _ = sample_layout(x0, random.Random(2000 + index), force="eval_mosaic")
+                    if kind == "focus":
+                        layout, _ = sample_layout(x0, random.Random(3000 + index), force="focus")
                     sigma = (0.3, 0.6, 0.9)[index % 3]
                     _loss, out, y_t, y0, sig, lay, _, data, gap = step_loss(
                         item, item_rng, layout=layout, sigma=sigma, noise_seed=index,
