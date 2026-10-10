@@ -26,7 +26,7 @@
 
 > **로컬 연구 (업스트림 아님).** 학습 재현과 VFM 플라이휠 그래프는 형제 체크아웃 [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · 에이전트 컨텍스트 [`AGENTS.md`](AGENTS.md). SCD 포트: `docs/`. 업스트림에 푸시하지 마세요.
 
-> **H3의 Level-of-Token(LoT) — 로컬 연구.** 디테일이 적은 영역에서 DiT 토큰을 더 적고 크게 사용해 37프레임 768×1344 클립에서 DiT 포워드가 2.64× 빨라집니다. 학습 시작: [치트시트](scripts/lot/CHEATSHEET.md) · [전체 가이드](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [결과](https://github.com/johndpope/MiniMax-H3/issues/1). 업스트림에 푸시하지 마세요.
+> **H3의 Level-of-Token(LoT) — 로컬 연구.** 디테일이 적은 영역에서 DiT 토큰을 더 적고 크게 사용해 37프레임 768×1344 클립에서 DiT 포워드가 2.61×, 정지 이미지에서 1.75–2.29× 빨라집니다. 가중치: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) · ComfyUI 노드: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) · 학습 시작: [치트시트](scripts/lot/CHEATSHEET.md) · [전체 가이드](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [결과](https://github.com/johndpope/MiniMax-H3/issues/1). **⚠️ 추가 학습이 필요합니다 — 도움을 구합니다: [Fizgig #183](https://github.com/shootthesound/Fizgig/discussions/183).** MiniMax H3 Community License: EU·영국·한국·미국에서는 사용할 수 없습니다. 업스트림에 푸시하지 마세요.
 
 ## 프롬프트 작성 스킬
 

@@ -26,7 +26,7 @@
 
 > **Local research (not upstream).** Training recreations and the VFM flywheel graph live in the sibling checkout [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · agent context [`AGENTS.md`](AGENTS.md). SCD port: `docs/`. Do not push these upstream.
 
-> **Level-of-Token (LoT) on H3 — local research.** Fewer, larger DiT tokens where detail is low: 2.64× faster DiT forward on a 37-frame 768×1344 clip. Start training: [cheatsheet](scripts/lot/CHEATSHEET.md) · [full guide](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [results](https://github.com/johndpope/MiniMax-H3/issues/1). Do not push upstream.
+> **Level-of-Token (LoT) on H3 — local research.** Fewer, larger DiT tokens where detail is low: 2.61× faster DiT forward on a 37-frame 768×1344 clip, 1.75–2.29× on a still. Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) · ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) · start training: [cheatsheet](scripts/lot/CHEATSHEET.md) · [full guide](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [results](https://github.com/johndpope/MiniMax-H3/issues/1). **⚠️ Needs more training — help wanted: [Fizgig #183](https://github.com/shootthesound/Fizgig/discussions/183).** MiniMax H3 Community License: not for use in the EU, UK, South Korea or USA. Do not push upstream.
 
 ## Prompt Writing Skill
 

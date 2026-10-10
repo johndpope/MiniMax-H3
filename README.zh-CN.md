@@ -26,7 +26,7 @@
 
 > **本地研究（非上游）。** 训练复现与 VFM flywheel 图在兄弟仓库 [`MiniMax-H3-vfm/scripts/vfm/README.md`](../MiniMax-H3-vfm/scripts/vfm/README.md) · 代理上下文 [`AGENTS.md`](AGENTS.md)。SCD 移植：`docs/`。请勿将这些内容推送到上游。
 
-> **H3 上的 Level-of-Token（LoT）— 本地研究。** 在细节少的区域使用更少、更大的 DiT token：37 帧 768×1344 片段上 DiT 前向快 2.64×。开始训练：[速查表](scripts/lot/CHEATSHEET.md) · [完整指南](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [结果](https://github.com/johndpope/MiniMax-H3/issues/1)。请勿推送到上游。
+> **H3 上的 Level-of-Token（LoT）— 本地研究。** 在细节少的区域使用更少、更大的 DiT token：37 帧 768×1344 片段上 DiT 前向快 2.61×，静态图快 1.75–2.29×。权重：[HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) · ComfyUI 节点：[ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) · 开始训练：[速查表](scripts/lot/CHEATSHEET.md) · [完整指南](scripts/lot/README.md#training-h3-for-lot-from-your-own-mp4s) · [结果](https://github.com/johndpope/MiniMax-H3/issues/1)。**⚠️ 仍需更多训练 — 欢迎协助：[Fizgig #183](https://github.com/shootthesound/Fizgig/discussions/183)。** MiniMax H3 Community License：不得在欧盟、英国、韩国或美国使用。请勿推送到上游。
 
 ## 提示词编写技能
 

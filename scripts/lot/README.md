@@ -1,5 +1,7 @@
 # Level-of-Token Diffusion, drop-in for MiniMax-H3
 
+> **⚠️ Research: the published LoT weights still need more training — help wanted: [Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183).** Quick start and current numbers: [CHEATSHEET.md](CHEATSHEET.md). Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA). ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane).
+
 Method code for [Level-of-Token Diffusion](https://arxiv.org/abs/2610.05816) (Nakayama et al., 2026). A LoT layout replaces the uniform visual token grid with rectangles of mixed size. The transformer sees the short sequence. A patch-wise asymmetric flow, taken from LakonLab, turns that sequence back into a dense velocity on the original lattice.
 
 This track is separate from Separable Causal Diffusion. Nothing here imports `scripts/scd`.
@@ -179,4 +181,4 @@ This renders the trainer's held-out prompts as same-seed stills. `dense_lora` sh
 
 ### What the first run showed
 
-The first run was 2,000 steps on 777 isometric stills, shift 12 everywhere. Held-out loss went dense 0.520 → 0.297, all-2×2 0.270 → 0.194, mosaic 0.387 → 0.262. Most of the dense drop is style learning, since all the data shares one look. In renders, training removed the frozen model's streaks and grid texture, but the coarse regions came out soft (`assets/lot-h3-trained-*.png`). Shift 12 trains at σ > 0.9 for 57% of steps and below 0.3 for only 3.5%, which is where detail forms. Hence `--shift 3` for LoT steps (12.6% below 0.3, 25% above 0.9).
+The first run was 2,000 steps on 777 isometric stills, shift 12 everywhere. Held-out loss went dense 0.520 → 0.297, all-2×2 0.270 → 0.194, mosaic 0.387 → 0.262. Most of the dense drop is style learning, since all the data shares one look. In renders, training removed the frozen model's streaks and grid texture, but the coarse regions came out soft (`assets/lot-h3-trained-*.png`). Shift 12 trains at σ > 0.9 for 57% of steps and below 0.3 for only 3.5%, which is where detail forms. Hence `--shift 3` for LoT steps (12.6% below 0.3, 25% above 0.9). Shift alone barely changed the renders; teacher distillation (`--distill 1`, runs 3 and 4) gave the first visible gains. Run history: [CHEATSHEET.md → Runs so far](CHEATSHEET.md#runs-so-far).
