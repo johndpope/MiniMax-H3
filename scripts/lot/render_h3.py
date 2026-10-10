@@ -95,7 +95,8 @@ def grid(rows: list[list[Image.Image]], labels: list[str], scale: float = 0.33) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--pairs", type=Path, required=True)
+    parser.add_argument("--pairs", type=Path, default=None,
+                        help="Procrustes pair dir; needed only for the lot_fit variant")
     parser.add_argument("--prompts", type=int, default=3)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
@@ -113,7 +114,6 @@ def main() -> None:
     args = parser.parse_args()
 
     refuse_if_busy("render_h3.py")
-    pairs = load_pairs(args.pairs)
     from fizgig.minimax.loader import load_minimax_h3_dit
     from fizgig.minimax.sampling import _sample_image_impl
 
@@ -130,7 +130,9 @@ def main() -> None:
     if "lot_fit" in wanted:
         fitted = make_h3_adapter()
         fitted.init_from_pretrained(*pretrained_maps(CHECKPOINT))
-        reports = fit_bank(fitted, pairs)
+        if args.pairs is None:
+            raise SystemExit("the lot_fit variant needs --pairs")
+        reports = fit_bank(fitted, load_pairs(args.pairs))
         splices["lot_fit"] = LotSplice(fitted.cuda(), layout, y_space=True)
 
     model = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
@@ -145,7 +147,9 @@ def main() -> None:
         from train_h3 import LORA_PATTERNS
 
         trained = make_h3_adapter()
-        trained.load_state_dict(torch.load(args.trained / "adapter.pt", map_location="cpu", weights_only=True))
+        from train_h3 import load_adapter_state
+
+        trained.load_state_dict(load_adapter_state(args.trained))
         if "lot_trained" in wanted:
             splices["lot_trained"] = LotSplice(trained.cuda(), layout, y_space=True)
         network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], model,

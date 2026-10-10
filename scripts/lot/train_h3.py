@@ -133,6 +133,16 @@ def load_item(item, rng: random.Random, device) -> tuple[torch.Tensor, torch.Ten
     return latent.to(device), hidden[mask].unsqueeze(0).to(device, torch.bfloat16)
 
 
+def load_adapter_state(run_dir: Path) -> dict:
+    """``adapter.safetensors`` (as published) or ``adapter.pt`` (as train_h3 writes it)."""
+    published = run_dir / "adapter.safetensors"
+    if published.is_file():
+        from safetensors.torch import load_file
+
+        return load_file(str(published))
+    return torch.load(run_dir / "adapter.pt", map_location="cpu", weights_only=True)
+
+
 # -------------------------------------------------------------------------------- layout
 
 def token_detail(latent: torch.Tensor) -> torch.Tensor:
@@ -329,7 +339,7 @@ def main() -> None:
                              include_patterns=LORA_PATTERNS)
     network.apply_to(text_encoders=None, unet=dit, apply_text_encoder=False, apply_unet=True)
     if args.init is not None:
-        state = torch.load(args.init / "adapter.pt", map_location="cpu", weights_only=True)
+        state = load_adapter_state(args.init)
         adapter.load_state_dict(state)
         info = network.load_weights(str(args.init / "lora.safetensors"))
         if info.missing_keys:
