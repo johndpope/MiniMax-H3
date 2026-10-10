@@ -30,8 +30,11 @@ from pathlib import Path
 
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+
 ATLAS = Path("/home/johndpope/Documents/GitHub/h3-atlas/data")
-TEXT_ENCODER = Path("/media/2TB/minimax-h3-nvfp4/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
+TEXT_ENCODER = LOT_H3_TEXT_ENCODER
 DEFAULT_OUT = Path(__file__).resolve().parent / "runs" / "cache_nikki"
 LATENT_T = 7
 
@@ -91,7 +94,7 @@ def build_latents(out: Path) -> None:
 def build_text(out: Path) -> None:
     from safetensors.torch import save_file
 
-    sys.path.insert(0, "/media/2TB/Fizgig/src")
+    sys.path.insert(0, FIZGIG_SRC)
     from gpu_guard import refuse_if_busy
     from fizgig.minimax.embedder import load_minimax_h3_te_planned
 

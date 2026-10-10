@@ -6,14 +6,48 @@ LoT gives the H3 DiT fewer, larger tokens where detail is low, then recovers the
 
 Run everything from the repo root. One GPU job at a time; the scripts refuse to start beside another one and never kill it.
 
-## Use the published weights (no training)
+## Quick start: download → test → time → train
 
-| Where | How |
-|---|---|
-| **ComfyUI**, still or video | Nodes in [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) + [`comfyui/h3_lot_image_api.json`](../../comfyui/h3_lot_image_api.json) / [`comfyui/h3_lot_video_api.json`](../../comfyui/h3_lot_video_api.json). See [ComfyUI](#comfyui-stills-and-video) below. |
-| **Python / Fizgig** | `hf download johndpope/MiniMax-H3-LoT --local-dir runs/lot_hf`, then `render_h3.py --trained runs/lot_hf/run4_nikki_distill ...` (step 5). |
+**Path A: ComfyUI (no Python setup).** Install [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane) and download the weights:
 
-Best checkpoint so far: **`run4_nikki_distill`** (see [Runs so far](#runs-so-far)).
+```bash
+cd ComfyUI/custom_nodes && git clone https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane.git && cd ../..
+hf download johndpope/MiniMax-H3-LoT run4_nikki_distill/adapter.safetensors run4_nikki_distill/lora.safetensors --local-dir /tmp/lot
+mkdir -p ComfyUI/models/lot
+cp /tmp/lot/run4_nikki_distill/adapter.safetensors ComfyUI/models/lot/run4_nikki_distill_adapter.safetensors
+cp /tmp/lot/run4_nikki_distill/lora.safetensors    ComfyUI/models/loras/minimax_h3_lot_run4_nikki_lora.safetensors
+```
+
+Load `workflows/lot_video_api.json` (clip) or `workflows/t1_lot_image_api.json` (still). Each samples the same seed twice, LoT and dense. **Validate the timing** by comparing the console's it/s for the two sampler runs (LoT runs first). Expect about 2.6× on the 22-frame clip and about 1.35× on a still.
+
+**Path B: Python (this repo + Fizgig).** Point the scripts at your files (defaults are this machine; see `lot_paths.py`):
+
+```bash
+export FIZGIG_SRC=/path/to/Fizgig/src                       # Fizgig branch immiscible-h3-noise
+export LOT_H3_CHECKPOINT=/path/to/minimax_h3_fl2va_pruned_int8_convrot.safetensors
+export LOT_H3_VAE=/path/to/minimax_h3_video_vae_fp16.safetensors
+hf download johndpope/MiniMax-H3-LoT --local-dir runs/lot_hf
+
+python3 scripts/lot/test_lot.py                                                   # 1. CPU tests -> ok 27
+python3 scripts/lot/parity_h3.py                                                  # 2. GPU: LoT 1x1 == dense -> ok=1
+python3 scripts/lot/time_lot_h3.py --shape still --trained runs/lot_hf/run4_nikki_distill            # 3. timing
+python3 scripts/lot/time_lot_h3.py --shape clip  --trained runs/lot_hf/run4_nikki_distill            #    (swap 0 if it fits)
+python3 scripts/lot/render_h3.py --trained runs/lot_hf/run4_nikki_distill --swap 4 \
+    --layout bands --variants dense,dense_lora,lot_trained                       # 4. look (held-out prompts)
+```
+
+Step 4 needs prompts already encoded by Qwen: a Fizgig H3 cache with `_te` files (`LOT_H3_STILLS_CACHE`, or `--prompt-cache DIR`, built in sections 1–2). Without one, use Path A for pictures; steps 1–3 need no text encoder.
+
+`time_lot_h3.py` prints one `LOT_H3 kind=lot_timing` line per layout with `ms` and `ratio` against dense, on random inputs. Measured here (RTX PRO 4000 Blackwell, 24 GB, run-4 weights, all blocks resident):
+
+| Shape | dense | `center` | `bands` | `uniform2` |
+|---|---|---|---|---|
+| still 768×1152 | 836 ms | 435 ms (**1.92×**) | 513 ms (1.63×) | 386 ms (2.16×) |
+| clip 512×768×22 | 2,482 ms | 987 ms (**2.51×**) | 1,269 ms (1.96×) | 806 ms (3.08×) |
+
+With `--swap 4` the same clip only shows 1.52× (`center`): each streamed block adds ~0.4 s to both sides. The long clip (`--shape long --swap 48`) measured **2.61×** with `bench_h3.py`.
+
+**Train:** sections 1–4 below. Best checkpoint so far: **`run4_nikki_distill`** (see [Runs so far](#runs-so-far)). Publish with `upload_hf.py`.
 
 ## 0. Does it work here?
 
@@ -136,6 +170,7 @@ Inside ComfyUI, a 1×1 `dense` layout reproduces the stock forward exactly (rela
 | DiT forward, 768×1152 still, all resident, run-4 adapter + LoRA | dense 0.81 s · bands 0.47 s (**1.75×**) · all-2×2 0.36 s (**2.29×**); LoRA costs ~1% |
 | ComfyUI sampler, 768×1152 still, `center` (300/864 tokens) | 5.6 it/s vs dense 4.1 it/s (1.35×; Comfy's fused kernels make dense steps fast) |
 | ComfyUI sampler, 512×768 22-frame clip, `center` | 3.45 it/s vs dense 1.33 it/s (**2.6×**) |
+| `time_lot_h3.py`, run-4 weights, all resident | still: center 1.92× · bands 1.63× · uniform2 2.16×; clip 512×768×22: center **2.51×** · bands 1.96× · uniform2 3.08× (peak 21.4 GB) |
 | 20-step 37-frame clip, end to end (sum of measured parts) | dense ~1,110 s · LoT ~446 s · ~2.5× incl. the 31.8 s decode |
 | VAE decode, 37 latent frames | 31.8 s, same with or without LoT |
 | Train step | stills ~2.7 s (swap 4) · 22-frame clips 13–17 s (swap 8) |

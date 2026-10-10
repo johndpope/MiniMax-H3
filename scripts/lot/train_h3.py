@@ -63,14 +63,15 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, "/media/2TB/Fizgig/src")
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+sys.path.insert(0, FIZGIG_SRC)
 
 from flow import lot_h3_clean_loss, sample_noisy  # noqa: E402
 from h3 import H3_EXTENTS, make_h3_adapter, patchify  # noqa: E402
 from h3_splice import LotSplice  # noqa: E402
 from layout import LotLayout, TokenRect, dense_layout, layout_from_rects  # noqa: E402
 
-CACHE = Path("/media/2TB/lora-data/fizgig_minimax_h3/cache_iso3d")
+CACHE = LOT_H3_STILLS_CACHE
 LORA_PATTERNS = [
     r"blocks\.\d+\.attn\.qkv_proj",
     r"blocks\.\d+\.attn\.out_proj",

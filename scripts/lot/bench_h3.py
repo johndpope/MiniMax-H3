@@ -15,15 +15,14 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, "/media/2TB/Fizgig/src")
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+sys.path.insert(0, FIZGIG_SRC)
 
 from h3 import clip_layout, make_h3_adapter  # noqa: E402
 from gpu_guard import refuse_if_busy  # noqa: E402
 from h3_splice import LotSplice  # noqa: E402
 
-CHECKPOINT = Path(
-    "/media/2TB/Fizgig/models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-)
+CHECKPOINT = LOT_H3_CHECKPOINT
 # 32 leaves the eager int8 MLP cast (S, 28672) fp32 with about 1.8 GB free on this
 # 24 GB card, and the 37-frame dense pack needs 4.1 GB. 48 is the loader maximum
 # (keep two blocks resident) and is what makes that allocation fit.

@@ -282,7 +282,7 @@ def test_h3_positions_match_base_grid():
     assert float(packed[5, 0]) == 3.0 and float(packed[5, 2]) != float(packed[3, 2])
 
     import sys as _sys
-    fizgig = "/media/2TB/Fizgig/src"
+    from lot_paths import FIZGIG_SRC as fizgig
     if fizgig not in _sys.path:
         _sys.path.insert(0, fizgig)
     from fizgig.minimax.model import image_position_ids
@@ -347,7 +347,7 @@ def test_gate_band_and_sigma():
 
 def test_final_layer_sees_modulated_states():
     import sys as _sys
-    fizgig = "/media/2TB/Fizgig/src"
+    from lot_paths import FIZGIG_SRC as fizgig
     if fizgig not in _sys.path:
         _sys.path.insert(0, fizgig)
     from fizgig.minimax.model import FinalLayer
@@ -381,7 +381,7 @@ def test_splice_shortens_and_cached_refuses():
     assert projected.shape == (4, 4)
 
     import sys as _sys
-    fizgig = "/media/2TB/Fizgig/src"
+    from lot_paths import FIZGIG_SRC as fizgig
     if fizgig not in _sys.path:
         _sys.path.insert(0, fizgig)
     from fizgig.minimax.model import MiniMaxH3DiT
@@ -458,7 +458,7 @@ def test_h3_head_sign_recovery():
 
 def test_splice_y_space_contract():
     import sys as _sys
-    fizgig = "/media/2TB/Fizgig/src"
+    from lot_paths import FIZGIG_SRC as fizgig
     if fizgig not in _sys.path:
         _sys.path.insert(0, fizgig)
     from fizgig.minimax.model import patchify_video
@@ -608,7 +608,7 @@ def test_train_layouts_tile_and_mix():
 
 def test_train_shift_moves_mass_to_low_sigma():
     import sys as _sys
-    fizgig = "/media/2TB/Fizgig/src"
+    from lot_paths import FIZGIG_SRC as fizgig
     if fizgig not in _sys.path:
         _sys.path.insert(0, fizgig)
     from fizgig.minimax.trainer import sample_sigmas

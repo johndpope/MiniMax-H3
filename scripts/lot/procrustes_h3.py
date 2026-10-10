@@ -28,14 +28,13 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, "/media/2TB/Fizgig/src")
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+sys.path.insert(0, FIZGIG_SRC)
 
 from adapter import LotVisualAdapter, _key  # noqa: E402
 from h3 import H3_EXTENTS, H3_TOKEN_DIM, clip_layout, make_h3_adapter  # noqa: E402
 
-CHECKPOINT = Path(
-    "/media/2TB/Fizgig/models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-)
+CHECKPOINT = LOT_H3_CHECKPOINT
 UNIT = (1, 1, 1)
 ORTHO_TOL = 1e-4
 

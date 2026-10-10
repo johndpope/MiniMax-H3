@@ -19,11 +19,12 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, "/media/2TB/Fizgig/src")
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+sys.path.insert(0, FIZGIG_SRC)
 
 from gpu_guard import refuse_if_busy  # noqa: E402
 
-VAE = Path("/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors")
+VAE = LOT_H3_VAE
 
 
 def main() -> None:

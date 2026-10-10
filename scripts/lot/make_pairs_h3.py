@@ -38,13 +38,14 @@ import torch.nn.functional as F
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, "/media/2TB/Fizgig/src")
+from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
+sys.path.insert(0, FIZGIG_SRC)
 
 from flow import gather_extent  # noqa: E402
 from h3 import H3_EXTENTS, H3_TOKEN_DIM, patchify  # noqa: E402
 from layout import TokenRect  # noqa: E402
 
-VAE = Path("/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors")
+VAE = LOT_H3_VAE
 DEFAULT_SRC = Path("/home/johndpope/Documents/GitHub/h3-atlas/logs/nikki_scrya_ref2va_768x1152")
 UNIT = (1, 1, 1)
 PIXELS_PER_TOKEN = 32
