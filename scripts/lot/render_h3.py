@@ -109,6 +109,8 @@ def main() -> None:
                         help="train_h3 output dir (adapter.pt, lora.safetensors): enables the dense_lora and "
                              "lot_trained variants and renders the trainer's held-out prompts")
     parser.add_argument("--rank", type=int, default=16, help="LoRA rank train_h3 used")
+    parser.add_argument("--holdout", type=int, default=24, help="the --holdout train_h3 used for that cache")
+    parser.add_argument("--pick", default=None, help="comma list of held-out indices to render, e.g. 7,3")
     parser.add_argument("--prompt-cache", type=Path, default=None,
                         help="with --trained: take held-out prompts from this train_h3 cache (default cache_iso3d)")
     args = parser.parse_args()
@@ -168,7 +170,9 @@ def main() -> None:
     if args.trained is not None:
         from train_h3 import CACHE, list_items
 
-        held = [te for _latent, te in list_items(args.prompt_cache or CACHE, 24)[1]]
+        held = [te for _latent, te in list_items(args.prompt_cache or CACHE, args.holdout)[1]]
+        if args.pick:
+            held = [held[int(index)] for index in args.pick.split(",")]
     prompts = load_prompts(args.prompts, held)
     variants = [name for name in args.variants.split(",") if name]
     latents: dict[tuple[int, str], torch.Tensor] = {}
