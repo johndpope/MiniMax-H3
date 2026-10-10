@@ -102,10 +102,14 @@ def list_items(cache: Path, holdout: int) -> tuple[list, list]:
     return items[holdout:], items[:holdout]
 
 
+MAX_LATENT_HW: tuple[int, int] | None = None   # set from --max-latent-hw in main()
+
+
 def load_item(item, rng: random.Random, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Clean latent ``(1, 24, T, H, W)`` cropped to a 4-token multiple, and text ``(1, L, 5120)``.
 
-    A still is ``T = 1``; a cached clip keeps its latent frames.
+    A still is ``T = 1``; a cached clip keeps its latent frames. ``--max-latent-hw``
+    caps the spatial crop (a random window), for clips too large to train whole.
     """
     from safetensors import safe_open
 
@@ -120,6 +124,9 @@ def load_item(item, rng: random.Random, device) -> tuple[torch.Tensor, torch.Ten
         latent = latent.unsqueeze(1)                      # (24, 1, H, W)
     step = 2 * SUPER                                       # latent pixels per super-cell
     height, width = latent.shape[-2] // step * step, latent.shape[-1] // step * step
+    if MAX_LATENT_HW is not None:
+        height = min(height, MAX_LATENT_HW[0] // step * step)
+        width = min(width, MAX_LATENT_HW[1] // step * step)
     top = rng.randint(0, latent.shape[-2] - height)
     left = rng.randint(0, latent.shape[-1] - width)
     latent = latent[..., top:top + height, left:left + width].unsqueeze(0)
@@ -263,6 +270,8 @@ def main() -> None:
                         help="weight of the frozen-dense-teacher term on LoT steps (0 = off)")
     parser.add_argument("--data-weight", type=float, default=1.0,
                         help="weight of the eq. 17 data term (0 = distillation only)")
+    parser.add_argument("--max-latent-hw", type=int, nargs=2, default=None, metavar=("H", "W"),
+                        help="random spatial crop cap in latent pixels (multiples of 8), e.g. 40 32")
     parser.add_argument("--init", type=Path, default=None,
                         help="warm-start adapter.pt + lora.safetensors from an earlier run dir")
     parser.add_argument("--steps", type=int, default=2000)
@@ -281,6 +290,8 @@ def main() -> None:
                              "allowed without LOT_H3_TRAIN")
     args = parser.parse_args()
 
+    global MAX_LATENT_HW
+    MAX_LATENT_HW = tuple(args.max_latent_hw) if args.max_latent_hw else None
     if not args.check and os.environ.get("LOT_H3_TRAIN") != "1":
         raise SystemExit("phase 5 is gated: set LOT_H3_TRAIN=1 to train (or --check for a dry pass)")
     from gpu_guard import refuse_if_busy
