@@ -16,7 +16,7 @@ import itertools
 import torch
 
 from adapter import LotVisualAdapter
-from layout import TokenRect, layout_from_rects
+from layout import TokenRect, dense_layout, layout_from_rects
 
 
 H3_LATENT_CHANNELS = 24
@@ -147,8 +147,7 @@ def grid_layout(name: str, time: int, height: int, width: int):
     if name not in GRID_LAYOUTS:
         raise ValueError(f"layout {name!r} is not one of {GRID_LAYOUTS}")
     if name == "dense":
-        from layout import dense_layout   # raster order: bit-identical to the stock dense forward
-        return dense_layout(time, height, width)
+        return dense_layout(time, height, width)   # raster order: bit-identical to the stock forward
     rows, cols = height // 4, width // 4
 
     def extent(cell_u: int, cell_v: int) -> tuple[int, int, int]:
