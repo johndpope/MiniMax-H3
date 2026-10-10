@@ -61,7 +61,8 @@ def eval_table(log_path: Path) -> str:
     return "\n".join(lines)
 
 
-def model_card(repo: str, title: str, settings: str, table: str) -> str:
+def model_card(repo: str, title: str, settings: str, table: str, subfolder: str = "") -> str:
+    run = f"runs/lot_hf/{subfolder}" if subfolder else "runs/lot_hf"
     return f"""---
 license: other
 license_name: minimax-h3-community-license
@@ -96,11 +97,12 @@ Needs the code in [`scripts/lot`]({CODE}), Fizgig with the LoT hooks (branch `im
 
 ```bash
 hf download {repo} --local-dir runs/lot_hf
-python3 scripts/lot/render_h3.py --trained runs/lot_hf --swap 4 \\
-    --layout bands --variants dense,dense_lora,lot_trained
+python3 scripts/lot/time_lot_h3.py --shape clip --trained {run}      # timing per layout
+python3 scripts/lot/render_h3.py --trained {run} --swap 4 \\
+    --layout bands --variants dense,dense_lora,lot_trained   # needs a cache of encoded prompts
 ```
 
-Training from your own mp4s: [cheatsheet]({CODE}/CHEATSHEET.md).
+ComfyUI (stills and video): [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane). Quick start and training from your own mp4s: [cheatsheet]({CODE}/CHEATSHEET.md).
 
 ## Training
 
@@ -149,7 +151,7 @@ def main() -> None:
               metadata={"format": "pt", "source": "train_h3 adapter.pt"})
     shutil.copy2(lora, stage / "lora.safetensors")
     shutil.copy2(log, stage / "train_log.jsonl")
-    (stage / "README.md").write_text(model_card(args.repo, args.title, args.settings, eval_table(log)))
+    (stage / "README.md").write_text(model_card(args.repo, args.title, args.settings, eval_table(log), args.subfolder))
 
     api = HfApi()
     api.create_repo(args.repo, private=not args.public, exist_ok=True)
