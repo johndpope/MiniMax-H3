@@ -23,7 +23,7 @@ import torch
 LICENSE_LINK = "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE"
 CODE = "https://github.com/johndpope/MiniMax-H3/tree/main/scripts/lot"
 ISSUE = "https://github.com/johndpope/MiniMax-H3/issues/1"
-HELP = ISSUE
+HELP = "https://github.com/scrya-com/lot-diffusion/discussions/1"
 # Section III.4 of the H3 Community License: every distribution carries this NOTICE text.
 NOTICE = ("MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, "
           "Copyright © 2026 MiniMax. All Rights Reserved.\n\n"
@@ -37,7 +37,7 @@ def warnings(repo: str) -> str:
     base = f"https://huggingface.co/{repo}/blob/main"
     return f"""> [!WARNING]
 > # ⚠️ THIS MODEL NEEDS MORE TRAINING — HELP WANTED
-> **These are research checkpoints, not a finished model.** LoT output is still visibly worse than dense MiniMax H3: coarse regions are soft, faces in talking-head shots distort, and the LoRA can bend bodies even with LoT off. If you have GPU time, data, or ideas, join the discussion: **[results and help-wanted thread]({HELP})**.
+> **These are research checkpoints, not a finished model.** LoT output is still visibly worse than dense MiniMax H3: coarse regions are soft, faces in talking-head shots distort, and the LoRA can bend bodies even with LoT off. If you have GPU time, data, or ideas, join the discussion: **[help-wanted discussion]({HELP})**.
 
 > [!CAUTION]
 > **License and territory.** Derived from MiniMax H3 under the [MiniMax H3 Community License Agreement]({base}/LICENSE) (see also [`NOTICE`]({base}/NOTICE)). That license allows use and redistribution **only outside its Excluded Territories: the European Union, the United Kingdom, the Republic of Korea and the United States of America.** Do not download or use these files there. Commercial use above US$20M yearly revenue needs MiniMax's written authorization. The [Acceptable Use Policy]({base}/LICENSE) applies, including: no impersonation without consent, and machine-generated output must be disclosed as such.

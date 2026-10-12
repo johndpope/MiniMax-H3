@@ -2,7 +2,7 @@
 
 > **Maintained at [scrya-com/lot-diffusion](https://github.com/scrya-com/lot-diffusion)** (same code, with the musubi-tuner H3 runtime bundled in `third_party/`).
 
-> **⚠️ Research: the published LoT weights still need more training — help wanted: [results and help-wanted thread (issue 1)](https://github.com/johndpope/MiniMax-H3/issues/1).** Quick start and current numbers: [CHEATSHEET.md](CHEATSHEET.md). Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA). ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane).
+> **⚠️ Research: the published LoT weights still need more training — help wanted: [help-wanted discussion](https://github.com/scrya-com/lot-diffusion/discussions/1).** Quick start and current numbers: [CHEATSHEET.md](CHEATSHEET.md). Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA). ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane).
 
 Method code for [Level-of-Token Diffusion](https://arxiv.org/abs/2610.05816) (Nakayama et al., 2026). A LoT layout replaces the uniform visual token grid with rectangles of mixed size. The transformer sees the short sequence. A patch-wise asymmetric flow, taken from LakonLab, turns that sequence back into a dense velocity on the original lattice.
 
