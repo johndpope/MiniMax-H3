@@ -1,6 +1,6 @@
 # Level-of-Token on H3: cheatsheet
 
-> **Maintained at [scrya-com/lot-diffusion](https://github.com/scrya-com/lot-diffusion)** (same code, with the musubi-tuner H3 runtime bundled in `third_party/`). Project page: [scrya.com/lot_diffusion](https://scrya.com/lot_diffusion).
+> **Maintained at [scrya-com/lot-diffusion](https://github.com/scrya-com/lot-diffusion)** (same code, with the musubi-tuner H3 runtime bundled in `third_party/`).
 
 > **⚠️ Research checkpoints: LoT output is still worse than dense H3, and it needs more training. Help wanted: [results and help-wanted thread (issue 1)](https://github.com/johndpope/MiniMax-H3/issues/1).** Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA).
 
