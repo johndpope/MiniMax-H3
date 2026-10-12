@@ -1,5 +1,7 @@
 # Level-of-Token on H3: cheatsheet
 
+> **Maintained at [scrya-com/lot-diffusion](https://github.com/scrya-com/lot-diffusion)** (same code, with the musubi-tuner H3 runtime bundled in `third_party/`). Project page: [scrya.com/lot_diffusion](https://scrya.com/lot_diffusion).
+
 > **⚠️ Research checkpoints: LoT output is still worse than dense H3, and it needs more training. Help wanted: [results and help-wanted thread (issue 1)](https://github.com/johndpope/MiniMax-H3/issues/1).** Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA).
 
 LoT gives the H3 DiT fewer, larger tokens where detail is low, then recovers the full-resolution velocity (Nakayama et al., [arXiv 2610.05816](https://arxiv.org/abs/2610.05816)). The VAE latent stays full size; only the transformer sequence shrinks. Full walkthrough: [README → Training H3 for LoT from your own mp4s](README.md#training-h3-for-lot-from-your-own-mp4s). Results and history: [issue 1](https://github.com/johndpope/MiniMax-H3/issues/1).
