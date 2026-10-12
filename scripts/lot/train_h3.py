@@ -9,7 +9,7 @@ and a rank-16 LoRA on ``attn.qkv_proj``, ``attn.out_proj``, ``mlp.fc1``,
 extent bank (``A``, ``s`` from ``--pairs``) stay frozen.
 
 One step: sample a layout, move the clean latent to y-space (``to_y``), draw
-sigma (Fizgig ``sample_sigmas``), noise, run the DiT with the LoT tail, and
+sigma (``h3_musubi.sample_sigma``), noise, run the DiT with the LoT tail, and
 take ``lot_h3_clean_loss`` (eq. 17 in H3's ``x0 - eps`` convention: velocity
 MSE in y-space). About 20% of steps use the dense 1×1 layout, which is the
 ordinary H3 LoRA loss and anchors the base.
@@ -19,9 +19,14 @@ density: median 0.92, ~3% of steps below 0.3) and ``--shift`` for LoT steps.
 The first 2,000-step run used 12 for both and the coarse regions came out
 soft: detail is decided at low sigma, which shift 12 almost never trains.
 A float is the uniform-u shift map, ``sigmoid`` is logit-normal, ``lognorm:S``
-is logit-normal under shift S (see Fizgig ``sample_sigmas``).
+is logit-normal under shift S.
 
-Data: one or more Fizgig H3 cache directories (``--cache``, repeatable) of
+Model: musubi-tuner's H3 transformer through ``h3_musubi`` (pruned int8
+ConvRot base, H2D-only block swap, activation checkpointing, its kohya-style
+LoRA network). The LoRA keys are ``lora_unet_blocks_N_...``, so musubi and
+ComfyUI load the result directly.
+
+Data: one or more H3 cache directories from ``build_cache_h3.py`` (``--cache``, repeatable) of
 ``*_minimaxh3.safetensors`` latents with ``*_minimaxh3_te.safetensors`` text,
 so Qwen is never loaded here. Stills are ``(24, H, W)``; clips are
 ``(24, T, H, W)`` (cache 384×640, 22 frames for ``latent_t = 7``). Each latent
@@ -63,21 +68,15 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from flow import lot_h3_clean_loss, sample_noisy  # noqa: E402
 from h3 import H3_EXTENTS, make_h3_adapter, patchify  # noqa: E402
+from h3_musubi import predict, sample_sigma, set_lora  # noqa: E402
 from h3_splice import LotSplice  # noqa: E402
 from layout import LotLayout, TokenRect, dense_layout, layout_from_rects  # noqa: E402
 
 CACHE = LOT_H3_STILLS_CACHE
-LORA_PATTERNS = [
-    r"blocks\.\d+\.attn\.qkv_proj",
-    r"blocks\.\d+\.attn\.out_proj",
-    r"blocks\.\d+\.mlp\.fc1",
-    r"blocks\.\d+\.mlp\.fc2",
-]
 SUPER = 4  # layout super-cell, in tokens: every extent tiles a 4×4 cell
 FINE = [(1, 1, 1)]
 MID = [(1, 1, 2), (1, 2, 1), (1, 2, 2)]
@@ -313,7 +312,7 @@ def extent_losses(out, y_t, y0, sigma, layout: LotLayout) -> dict[str, float]:
 # --------------------------------------------------------------------------------- train
 
 def parse_shift(value: str):
-    """``12`` -> 12.0; ``sigmoid`` and ``lognorm:S`` pass through to ``sample_sigmas``."""
+    """``12`` -> 12.0; ``sigmoid`` and ``lognorm:S`` pass through to ``sample_sigma``."""
     if value == "sigmoid" or value.startswith("lognorm:"):
         return value
     return float(value)
@@ -321,33 +320,25 @@ def parse_shift(value: str):
 
 def check(adapter, dit, network, groups, items, rng, device, args) -> None:
     """Forward + backward once per layout kind. No optimizer step, nothing written."""
-    from fizgig.minimax.trainer import sample_sigmas
-
     params = [p for g in groups for p in g["params"]]
     for kind_wanted in ("dense", "box", "focus", "texture", "mosaic", "uniform"):
         x0, text = load_item(rng.choice(items), rng, device)
         layout, kind = sample_layout(x0, rng, force=kind_wanted)
         splice = LotSplice(adapter, layout, y_space=True)
         y0 = splice.to_y(x0)
-        sigma = sample_sigmas(1, device, shift=args.dense_shift if kind == "dense" else args.shift)
+        sigma = sample_sigma(args.dense_shift if kind == "dense" else args.shift, device)
         y_t, _ = sample_noisy(y0, sigma)
         torch.cuda.reset_peak_memory_stats()
         start = time.perf_counter()
-        dit._lot = splice
-        try:
-            out = dit(y_t, 1.0 - sigma, text)
-        finally:
-            dit._lot = None
+        out = predict(dit, y_t, 1.0 - sigma, text, lot=splice)
         loss = lot_h3_clean_loss(out, y_t, y0, sigma)
         if args.distill > 0 and kind != "dense":
             # Teacher: same x_t, LoRA off, dense, no grad. Pulled toward with the same weight.
             x_t = (1.0 - sigma).reshape(1, 1, 1, 1, 1) * x0 + sigma.reshape(1, 1, 1, 1, 1) * (y_t - (1.0 - sigma).reshape(1, 1, 1, 1, 1) * y0) / sigma.reshape(1, 1, 1, 1, 1)
-            for module in network.unet_loras:
-                module.multiplier = 0.0
+            set_lora(network, False)
             with torch.no_grad():
-                teacher_out = dit(x_t, 1.0 - sigma, text)
-            for module in network.unet_loras:
-                module.multiplier = 1.0
+                teacher_out = predict(dit, x_t, 1.0 - sigma, text)
+            set_lora(network, True)
             target = x_t + sigma.reshape(1, 1, 1, 1, 1) * teacher_out.float()
             student = splice.to_x(y_t.float() + sigma.reshape(1, 1, 1, 1, 1) * out.float())
             loss = loss + args.distill * (student - target).square().mean() / float(sigma.clamp(min=0.05)) ** 2
@@ -368,7 +359,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--pairs", type=Path, required=True, help="Procrustes pair dir for the frozen bank")
     parser.add_argument("--cache", type=Path, action="append", default=None,
-                        help=f"Fizgig H3 cache dir; repeat to mix stills and clips (default {CACHE})")
+                        help=f"H3 cache dir; repeat to mix stills and clips (default {CACHE})")
     parser.add_argument("--shift", type=parse_shift, default=12.0,
                         help="sigma density for LoT steps: float shift, 'sigmoid', or 'lognorm:S'")
     parser.add_argument("--dense-shift", type=parse_shift, default=12.0,
@@ -407,10 +398,8 @@ def main() -> None:
     from gpu_guard import refuse_if_busy
 
     refuse_if_busy("train_h3.py")
+    from h3_musubi import load_dit, make_lora
     from procrustes_h3 import CHECKPOINT, fit_bank, load_pairs, pretrained_maps
-    from fizgig.minimax.loader import load_minimax_h3_dit
-    from fizgig.minimax.trainer import sample_sigmas
-    from fizgig.networks.lora import create_network
 
     device = torch.device("cuda")
     torch.manual_seed(args.seed)
@@ -428,16 +417,8 @@ def main() -> None:
     adapter.to(device)
     adapter.bank.requires_grad_(False)
 
-    dit = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
-                              base_quant="int8", blocks_to_swap=args.swap)
-    dit.requires_grad_(False)
-    if args.swap:
-        dit.enable_block_swap(args.swap, h2d_only=True)
-        dit.enable_gradient_checkpointing(True)
-    dit._tread = None
-    network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], dit,
-                             include_patterns=LORA_PATTERNS)
-    network.apply_to(text_encoders=None, unet=dit, apply_text_encoder=False, apply_unet=True)
+    dit = load_dit(CHECKPOINT, device=device, swap=args.swap, train=True)
+    network = make_lora(dit, args.rank)
     if args.init is not None:
         state = load_adapter_state(args.init)
         adapter.load_state_dict(state)
@@ -447,10 +428,6 @@ def main() -> None:
         print(f"LOT_H3 kind=train_init from={args.init}", flush=True)
     network.requires_grad_(True)
     network.to(device=device, dtype=torch.bfloat16)
-    expected = len(LORA_PATTERNS) * len(dit.blocks)
-    if len(network.unet_loras) != expected:
-        raise RuntimeError(f"{len(network.unet_loras)} LoRA modules wrapped, expected {expected} "
-                           f"(4 linears x {len(dit.blocks)} blocks)")
 
     lora_groups, _ = network.prepare_optimizer_params(args.lr)
     adapter_params = [p for name, p in adapter.named_parameters() if not name.startswith("bank.")]
@@ -475,19 +452,15 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     log = open(args.out / "log.jsonl", "a")
 
-    def set_lora(on: bool) -> None:
-        for module in network.unet_loras:
-            module.multiplier = 1.0 if on else 0.0
-
     def teacher_clean(x0, noise, sigma, text) -> torch.Tensor:
         """Frozen base (LoRA off, dense) clean estimate from the same x_t; H3's head is x0 - eps."""
         x_t = (1.0 - sigma).reshape(1, 1, 1, 1, 1) * x0 + sigma.reshape(1, 1, 1, 1, 1) * noise
-        set_lora(False)
+        set_lora(network, False)
         try:
             with torch.no_grad():
-                out = dit(x_t, 1.0 - sigma, text)
+                out = predict(dit, x_t, 1.0 - sigma, text)
         finally:
-            set_lora(True)
+            set_lora(network, True)
         return (x_t + sigma.reshape(1, 1, 1, 1, 1) * out.float()).detach()
 
     def teacher_gap(splice, out, y_t, sigma, target) -> torch.Tensor:
@@ -504,16 +477,12 @@ def main() -> None:
         splice = LotSplice(adapter, layout, y_space=True)
         y0 = splice.to_y(x0)
         if sigma is None:
-            sigma = sample_sigmas(1, device, shift=args.dense_shift if kind == "dense" else args.shift)
+            sigma = sample_sigma(args.dense_shift if kind == "dense" else args.shift, device)
         sigma = torch.as_tensor(sigma, device=device, dtype=torch.float32).reshape(1)
         gen = None if noise_seed is None else torch.Generator(device=device).manual_seed(noise_seed)
         noise = torch.randn(y0.shape, device=device, generator=gen)
         y_t, _ = sample_noisy(y0, sigma, noise)
-        dit._lot = splice
-        try:
-            out = dit(y_t, 1.0 - sigma, text)
-        finally:
-            dit._lot = None
+        out = predict(dit, y_t, 1.0 - sigma, text, lot=splice)
         data = lot_h3_clean_loss(out, y_t, y0, sigma)
         gap = None
         # Training draws its own layout (kind != "fixed"); evals pass one and opt in explicitly.

@@ -10,7 +10,7 @@ the directory is missing. There is no ``1x1x1.pt``: a unit extent is the
 identity and must stay so.
 
 The fit reads only ``video_patch_proj`` and ``final_layer.video_out`` from the
-checkpoint, on CPU. ``--smoke`` loads the streamed int8 DiT and runs one
+checkpoint, on CPU. ``--smoke`` loads the int8 DiT (32 blocks streamed) and runs one
 frozen forward on the 384×640, ``latent_t=7`` canvas in y-space. It asserts
 shape, finite values, and the packed length. It does not judge picture
 quality: a frozen base sees fitted scales it was never trained on.
@@ -28,8 +28,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from adapter import LotVisualAdapter, _key  # noqa: E402
 from h3 import H3_EXTENTS, H3_TOKEN_DIM, clip_layout, make_h3_adapter  # noqa: E402
@@ -149,20 +148,10 @@ def smoke(adapter: LotVisualAdapter) -> None:
     from flow import sample_noisy
     from gpu_guard import refuse_if_busy
     from h3_splice import LotSplice
-    from fizgig.minimax.loader import load_minimax_h3_dit
-    from fizgig.minimax.model import audio_latents_for_frames, pixel_frames_for_latent
+    from h3_musubi import audio_frames, load_dit, predict
 
     refuse_if_busy("procrustes_h3.py")
-    model = load_minimax_h3_dit(
-        str(CHECKPOINT),
-        device="cuda",
-        compute_dtype=torch.bfloat16,
-        base_quant="int8",
-        blocks_to_swap=SMOKE_SWAP,
-    )
-    model.enable_block_swap(SMOKE_SWAP, h2d_only=True)
-    model.eval()
-    model._tread = None
+    model = load_dit(CHECKPOINT, swap=SMOKE_SWAP)
 
     layout = clip_layout(SMOKE_T, SMOKE_H // 2, SMOKE_W // 2)
     adapter.cuda()
@@ -171,20 +160,17 @@ def smoke(adapter: LotVisualAdapter) -> None:
     x0 = torch.randn(1, 24, SMOKE_T, SMOKE_H, SMOKE_W, device="cuda", dtype=torch.float32)
     y0 = splice.to_y(x0)
     y_t, _noise = sample_noisy(y0, SMOKE_SIGMA)
-    text = torch.randn(1, SMOKE_TEXT, model.hidden_size, device="cuda", dtype=torch.bfloat16)
-    n_audio = audio_latents_for_frames(pixel_frames_for_latent(SMOKE_T))
-    audio = torch.randn(n_audio * 2, model.config.audio_latents_dim, device="cuda", dtype=torch.float32)
+    text = torch.randn(1, SMOKE_TEXT, model.config.text_dim, device="cuda", dtype=torch.bfloat16)
+    n_audio = audio_frames(SMOKE_T)
     seen = []
-    hook = model.blocks[0].register_forward_hook(lambda _m, inputs, _o: seen.append(tuple(inputs[0].shape)))
-    model._lot = splice
+    hook = model.blocks[0].register_forward_hook(lambda _m, inputs, _o: seen.append(tuple(inputs[0].shape[1:])))
     try:
         with torch.inference_mode():
-            out = model(y_t.to(torch.bfloat16), torch.tensor(1.0 - SMOKE_SIGMA, device="cuda"), text, audio_rows=audio)
+            out = predict(model, y_t, 1.0 - SMOKE_SIGMA, text, lot=splice)
     finally:
         hook.remove()
-        model._lot = None
     expected_seq = SMOKE_TEXT + n_audio * 2 + layout.count
-    # H3's head is x0 - eps, so one step to sigma 0 is y_t + sigma * out (Fizgig sampling.py).
+    # H3's head is x0 - eps, so one step to sigma 0 is y_t + sigma * out.
     y0_hat = y_t + SMOKE_SIGMA * out.float()
     x0_hat = splice.to_x(y0_hat)
     ok = (

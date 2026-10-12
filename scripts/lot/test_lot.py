@@ -2,6 +2,9 @@
 """CPU checks for the Level-of-Token adapter. No weights and no GPU.
 
     python3 scripts/lot/test_lot.py
+
+Tests that compare against musubi-tuner's H3 code (positions, final layer,
+patch order) run when ``MUSUBI_SRC`` points at a checkout and are skipped otherwise.
 """
 
 from __future__ import annotations
@@ -62,6 +65,18 @@ from sanity import (  # noqa: E402
     check_h3_bank_rejects_coarse_square,
     check_short_sequence_full_canvas,
 )
+
+
+def _musubi():
+    """musubi-tuner's H3 package, or None when no checkout is available."""
+    import h3_musubi  # noqa: F401  (puts MUSUBI_SRC on sys.path)
+
+    try:
+        import musubi_tuner.minimax_h3.model as model
+        import musubi_tuner.minimax_h3.packing as packing
+    except ImportError:
+        return None
+    return model, packing
 
 
 def test_shape_and_centers():
@@ -284,22 +299,21 @@ def test_h3_positions_match_base_grid():
     assert float(packed[3, 0]) == 3.0 and float(packed[4, 0]) == 4.0
     assert float(packed[5, 0]) == 3.0 and float(packed[5, 2]) != float(packed[3, 2])
 
-    import sys as _sys
-    from lot_paths import FIZGIG_SRC as fizgig
-    if fizgig not in _sys.path:
-        _sys.path.insert(0, fizgig)
-    from fizgig.minimax.model import image_position_ids
+    found = _musubi()
+    if found is None:
+        print("  (musubi-tuner not found: skipped the comparison with its position grid)")
+        return
+    _model, packing = found
+    from h3_musubi import audio_frames
 
-    reference = image_position_ids(3, 4, 6, num_audio_latents=2, latent_t=2)
-    assert torch.allclose(packed, reference)
-    still = dense_layout(1, 2, 3)
-    with_cond, _start = packed_positions(
-        still, 4, 6, text_len=3, num_audio_latents=2, keyframes=[0], refs=[(4, 6), (4, 6, 2)],
-    )
-    cond_ref = image_position_ids(
-        3, 4, 6, num_audio_latents=2, latent_t=1, keyframes=[0], refs=[(4, 6), (4, 6, 2)],
-    )
-    assert torch.allclose(with_cond, cond_ref)
+    clip = dense_layout(2, 2, 3)
+    for task, keyframes, conditions, roles in (("t2va", None, (), None), ("fl2va", [0], ((1, 4, 6),), ("first",))):
+        ours, _start = packed_positions(clip, 4, 6, text_len=3, num_audio_latents=audio_frames(2),
+                                        keyframes=keyframes)
+        reference = packing.build_position_grid(packing.build_h3_layout(
+            task=task, text_length=3, target_video=(2, 4, 6), target_audio_frames=audio_frames(2),
+            visual_conditions=conditions, condition_roles=roles))[0]
+        assert torch.allclose(ours, reference), task
 
 
 def test_vectorized_gather_and_scale():
@@ -349,15 +363,18 @@ def test_gate_band_and_sigma():
 
 
 def test_final_layer_sees_modulated_states():
-    import sys as _sys
-    from lot_paths import FIZGIG_SRC as fizgig
-    if fizgig not in _sys.path:
-        _sys.path.insert(0, fizgig)
-    from fizgig.minimax.model import FinalLayer
+    found = _musubi()
+    if found is None:
+        print("  (musubi-tuner not found: skipped)")
+        return
+    FinalLayer = found[0].FinalLayer
 
     torch.manual_seed(1)
     hidden, token_dim, t_dim = 8, 4, 4
-    layer = FinalLayer(hidden, t_dim, token_dim, 2, 1e-6)
+    layer = FinalLayer(hidden, t_dim, token_dim, 2, norm_eps=1e-6, dtype=torch.float32)
+    with torch.no_grad():
+        for parameter in layer.parameters():
+            parameter.normal_()
     adapter = LotVisualAdapter(token_dim, hidden, [(1, 1, 1)])
     adapter.init_from_pretrained(torch.randn(hidden, token_dim), layer.video_out.weight.detach(), None, layer.video_out.bias.detach())
     states = torch.randn(3, hidden)
@@ -368,7 +385,7 @@ def test_final_layer_sees_modulated_states():
     assert not torch.allclose(adapter.out_proj["1x1x1"](states), layer.video_out(modulated))
 
 
-def test_splice_shortens_and_cached_refuses():
+def test_splice_shortens():
     layout = layout_from_rects(1, 2, 2, [TokenRect(0, 0, 0, 1, 2, 2)])
     adapter = LotVisualAdapter(4, 8, [(1, 2, 2)])
     splice = LotSplice(adapter, layout)
@@ -382,28 +399,6 @@ def test_splice_shortens_and_cached_refuses():
     assert float(replaced[-1, 0]) == 5.0
     projected = splice.project_rows(torch.randn(1, 8), tokens, 0.4)
     assert projected.shape == (4, 4)
-
-    import sys as _sys
-    from lot_paths import FIZGIG_SRC as fizgig
-    if fizgig not in _sys.path:
-        _sys.path.insert(0, fizgig)
-    from fizgig.minimax.model import MiniMaxH3DiT
-
-    model = MiniMaxH3DiT.__new__(MiniMaxH3DiT)
-    model._lot = splice
-    try:
-        MiniMaxH3DiT.forward_cached(model, torch.zeros(1, 24, 1, 4, 4), torch.tensor(0.5), torch.zeros(1, 2, 8))
-    except RuntimeError as exc:
-        assert "forward_cached" in str(exc)
-    else:
-        raise AssertionError("forward_cached accepted a LoT tail")
-    model._tread = (0.5, 0, 1)
-    try:
-        MiniMaxH3DiT.forward(model, torch.zeros(1, 24, 1, 4, 4), torch.tensor(0.5), torch.zeros(1, 2, 8))
-    except RuntimeError as exc:
-        assert "TREAD" in str(exc)
-    else:
-        raise AssertionError("forward accepted LoT and TREAD together")
 
 
 def test_sanity_short_sequence_writes_nothing():
@@ -455,16 +450,18 @@ def test_h3_head_sign_recovery():
     assert torch.allclose(h3_velocity, y0 - eps, atol=1e-5)
     wrong = adapter.velocity_from_states(states, y_t, sigma, layout)
     assert not torch.allclose(-wrong, y0 - eps, atol=1e-2)
-    # One H3 step to sigma 0 (Fizgig sampling.py) lands on the clean latent.
+    # One H3 step to sigma 0 (x0 = x_t + sigma * v, H3's scheduler) lands on the clean latent.
     assert torch.allclose(y_t + sigma * h3_velocity, y0, atol=1e-5)
 
 
 def test_splice_y_space_contract():
-    import sys as _sys
-    from lot_paths import FIZGIG_SRC as fizgig
-    if fizgig not in _sys.path:
-        _sys.path.insert(0, fizgig)
-    from fizgig.minimax.model import patchify_video
+    found = _musubi()
+
+    def patchify_video(latent, _patch):
+        """H3's packed row order: musubi's ``pack_video_rows`` when available, else ours."""
+        if found is None:
+            return patchify(latent).reshape(-1, 96)
+        return found[1].pack_video_rows(latent)[0]
 
     torch.manual_seed(6)
     adapter = make_h3_adapter(hidden_size=8)
@@ -623,12 +620,11 @@ def test_train_layouts_tile_and_mix():
 
 
 def test_train_shift_moves_mass_to_low_sigma():
-    import sys as _sys
-    from lot_paths import FIZGIG_SRC as fizgig
-    if fizgig not in _sys.path:
-        _sys.path.insert(0, fizgig)
-    from fizgig.minimax.trainer import sample_sigmas
+    from h3_musubi import sample_sigma
     from train_h3 import parse_shift
+
+    def sample_sigmas(count, device, shift, generator):
+        return sample_sigma(shift, device, generator, count)
 
     assert parse_shift("12") == 12.0 and parse_shift("sigmoid") == "sigmoid"
     assert parse_shift("lognorm:3") == "lognorm:3"
@@ -728,7 +724,7 @@ def main():
         test_vectorized_gather_and_scale,
         test_gate_band_and_sigma,
         test_final_layer_sees_modulated_states,
-        test_splice_shortens_and_cached_refuses,
+        test_splice_shortens,
         test_euler_inference_recovers_clean,
         test_h3_head_sign_recovery,
         test_splice_y_space_contract,

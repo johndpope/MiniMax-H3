@@ -32,9 +32,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT  # noqa: E402
-
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT  # noqa: E402
 
 from gpu_guard import refuse_if_busy  # noqa: E402
 from h3 import GRID_LAYOUTS, grid_layout, make_h3_adapter  # noqa: E402
@@ -59,29 +57,19 @@ def main() -> None:
 
     refuse_if_busy("time_lot_h3.py")
     torch.backends.cuda.enable_math_sdp(False)
-    from fizgig.minimax.loader import load_minimax_h3_dit
-    from fizgig.minimax.model import audio_latents_for_frames, latent_frames_for_pixels
+    from h3_musubi import latent_frames, load_dit, make_lora, predict
 
     width, height, frames = SHAPES[args.shape]
-    latent_t = 1 if frames == 1 else latent_frames_for_pixels(frames)
-    model = load_minimax_h3_dit(str(LOT_H3_CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
-                                base_quant="int8", blocks_to_swap=args.swap)
-    if args.swap:
-        model.enable_block_swap(args.swap, h2d_only=True)
-    model.eval()
-    model._tread = None
-    model._lot = None
+    latent_t = latent_frames(frames)
+    model = load_dit(LOT_H3_CHECKPOINT, swap=args.swap)
 
     adapter = make_h3_adapter()
     network = None
     if args.trained is not None:
-        from fizgig.networks.lora import create_network
-        from train_h3 import LORA_PATTERNS, load_adapter_state
+        from train_h3 import load_adapter_state
 
         adapter.load_state_dict(load_adapter_state(args.trained))
-        network = create_network(None, "lora_unet", 1.0, 16, 16.0, None, [], model,
-                                 include_patterns=LORA_PATTERNS)
-        network.apply_to(text_encoders=None, unet=model, apply_text_encoder=False, apply_unet=True)
+        network = make_lora(model, 16)
         network.load_weights(str(args.trained / "lora.safetensors"))
         network.to(device="cuda", dtype=torch.bfloat16).eval()
     else:
@@ -91,31 +79,24 @@ def main() -> None:
     adapter.float().cuda().eval()
 
     video = torch.randn(1, 24, latent_t, height // 16, width // 16, device="cuda", dtype=torch.bfloat16)
-    text = torch.randn(1, args.text, model.hidden_size, device="cuda", dtype=torch.bfloat16)
-    n_audio = audio_latents_for_frames(frames)
-    audio = torch.randn(n_audio * 2, model.config.audio_latents_dim, device="cuda")
-    t = torch.tensor(0.6, device="cuda")
+    text = torch.randn(1, args.text, model.config.text_dim, device="cuda", dtype=torch.bfloat16)
     seen = {}
 
     def remember(_module, inputs, _output) -> None:
-        seen["seq"] = int(inputs[0].shape[0])
+        seen["seq"] = int(inputs[0].shape[1])
 
     hook = model.blocks[0].register_forward_hook(remember)
 
     def timed(splice) -> tuple[float, int]:
-        model._lot = splice
-        try:
-            with torch.inference_mode():
-                model(video, t, text, audio_rows=audio)
+        with torch.inference_mode():
+            predict(model, video, 0.4, text, lot=splice)
+            torch.cuda.synchronize()
+            samples = []
+            for _ in range(args.repeats):
+                start = time.perf_counter()
+                predict(model, video, 0.4, text, lot=splice)
                 torch.cuda.synchronize()
-                samples = []
-                for _ in range(args.repeats):
-                    start = time.perf_counter()
-                    model(video, t, text, audio_rows=audio)
-                    torch.cuda.synchronize()
-                    samples.append(time.perf_counter() - start)
-        finally:
-            model._lot = None
+                samples.append(time.perf_counter() - start)
         samples.sort()
         return samples[len(samples) // 2] * 1000.0, seen["seq"]
 

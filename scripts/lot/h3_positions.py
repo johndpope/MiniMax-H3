@@ -114,7 +114,7 @@ def packed_positions(
 ) -> tuple[torch.Tensor, int]:
     """``(S, 3)`` positions and the index where target video begins.
 
-    Order matches Fizgig: text, keyframes, refs, audio, target video. Audio
+    Order matches H3's packing (and musubi-tuner's ``build_position_grid``): text, keyframes, refs, audio, target video. Audio
     does not advance the video clock. With no keyframes and no refs both start
     at ``text_len``. A reference image advances the cursor by 1. A video-kind
     reference ``(h, w, t)`` with ``t > 1`` advances it by the video span sum.

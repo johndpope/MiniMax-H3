@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Closed 1x1 parity against Fizgig on one small latent.
+"""Closed 1x1 parity: an all-1x1 LoT tail against the dense H3 forward on one small latent.
 
 Loads the pruned int8 checkpoint with block streaming. Writes no file.
 Refuses while another LoT GPU script is alive. Does not call empty_cache.
@@ -15,8 +15,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from h3 import make_h3_adapter  # noqa: E402
 from gpu_guard import refuse_if_busy  # noqa: E402
@@ -37,29 +36,20 @@ def main() -> None:
     refuse_if_busy("parity_h3.py")
     if not CHECKPOINT.is_file():
         raise SystemExit(f"missing checkpoint {CHECKPOINT}")
-    from fizgig.minimax.loader import load_minimax_h3_dit
+    from h3_musubi import load_dit, predict
 
-    model = load_minimax_h3_dit(
-        str(CHECKPOINT),
-        device="cuda",
-        compute_dtype=torch.bfloat16,
-        base_quant="int8",
-        blocks_to_swap=32,
-    )
-    model.enable_block_swap(32, h2d_only=True)
-    model.eval()
-    model._lot = None
-    model._tread = None
-
+    model = load_dit(CHECKPOINT, swap=32)
     height = width = 16
-    video = torch.randn(1, 24, 1, height, width, device="cuda", dtype=torch.bfloat16)
-    text = torch.randn(1, 4, model.hidden_size, device="cuda", dtype=torch.bfloat16)
-    audio = torch.randn(4, model.config.audio_latents_dim, device="cuda", dtype=torch.float32)
-    time = torch.tensor(0.6, device="cuda")
+    video = torch.randn(1, 24, 1, height, width, device="cuda", dtype=torch.float32)
+    text = torch.randn(1, 4, model.config.text_dim, device="cuda", dtype=torch.bfloat16)
 
-    with torch.inference_mode():
-        off_a = model(video, time, text, audio_rows=audio)
-        off_b = model(video, time, text, audio_rows=audio)
+    def run(splice=None):
+        audio = torch.Generator("cuda").manual_seed(0)
+        with torch.inference_mode():
+            return predict(model, video, 0.6, text, lot=splice, audio_generator=audio)
+
+    off_a = run()
+    off_b = run()
     floor = rel_rms(off_a, off_b)
 
     adapter = make_h3_adapter()
@@ -71,9 +61,7 @@ def main() -> None:
     )
     adapter.cuda()
     layout = dense_layout(1, height // 2, width // 2)
-    model._lot = LotSplice(adapter, layout)
-    with torch.inference_mode():
-        on = model(video, time, text, audio_rows=audio)
+    on = run(LotSplice(adapter, layout))
     gap = rel_rms(on, off_a)
     max_abs = float((on.float() - off_a.float()).abs().max())
     limit = max(1e-4, 2.0 * floor)

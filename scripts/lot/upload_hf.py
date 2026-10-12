@@ -23,7 +23,7 @@ import torch
 LICENSE_LINK = "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE"
 CODE = "https://github.com/johndpope/MiniMax-H3/tree/main/scripts/lot"
 ISSUE = "https://github.com/johndpope/MiniMax-H3/issues/1"
-HELP = "https://github.com/shootthesound/Fizgig/discussions/183"
+HELP = ISSUE
 # Section III.4 of the H3 Community License: every distribution carries this NOTICE text.
 NOTICE = ("MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, "
           "Copyright © 2026 MiniMax. All Rights Reserved.\n\n"
@@ -37,7 +37,7 @@ def warnings(repo: str) -> str:
     base = f"https://huggingface.co/{repo}/blob/main"
     return f"""> [!WARNING]
 > # ⚠️ THIS MODEL NEEDS MORE TRAINING — HELP WANTED
-> **These are research checkpoints, not a finished model.** LoT output is still visibly worse than dense MiniMax H3: coarse regions are soft, faces in talking-head shots distort, and the LoRA can bend bodies even with LoT off. If you have GPU time, data, or ideas, join the discussion: **[shootthesound/Fizgig discussions #183]({HELP})**.
+> **These are research checkpoints, not a finished model.** LoT output is still visibly worse than dense MiniMax H3: coarse regions are soft, faces in talking-head shots distort, and the LoRA can bend bodies even with LoT off. If you have GPU time, data, or ideas, join the discussion: **[results and help-wanted thread]({HELP})**.
 
 > [!CAUTION]
 > **License and territory.** Derived from MiniMax H3 under the [MiniMax H3 Community License Agreement]({base}/LICENSE) (see also [`NOTICE`]({base}/NOTICE)). That license allows use and redistribution **only outside its Excluded Territories: the European Union, the United Kingdom, the Republic of Korea and the United States of America.** Do not download or use these files there. Commercial use above US$20M yearly revenue needs MiniMax's written authorization. The [Acceptable Use Policy]({base}/LICENSE) applies, including: no impersonation without consent, and machine-generated output must be disclosed as such.
@@ -79,7 +79,7 @@ tags:
 
 {warnings(repo)}
 
-Research weights for running **MiniMax-H3**'s DiT on a **Level-of-Token (LoT)** layout: fewer, larger tokens where detail is low, with the full-resolution velocity recovered afterwards ([Nakayama et al., arXiv 2610.05816](https://arxiv.org/abs/2610.05816)). The VAE latent stays full size; only the transformer sequence shrinks. On one 24 GB card a 37-frame 768×1344 DiT forward measured 51.9 s dense vs 19.6 s LoT (2.64×). The VAE decode is unchanged.
+Research weights for running **MiniMax-H3**'s DiT on a **Level-of-Token (LoT)** layout: fewer, larger tokens where detail is low, with the full-resolution velocity recovered afterwards ([Nakayama et al., arXiv 2610.05816](https://arxiv.org/abs/2610.05816)). The VAE latent stays full size; only the transformer sequence shrinks. On one 24 GB card a 124-frame 768×1344 DiT forward (37 latent frames) measured 52.3 s dense vs 18.3 s LoT (2.85×, `center` layout). The VAE decode is unchanged.
 
 **Status: research.** Coarse regions are still softer than dense H3. Progress, renders and caveats are tracked in [the issue]({ISSUE}).
 
@@ -93,12 +93,12 @@ Research weights for running **MiniMax-H3**'s DiT on a **Level-of-Token (LoT)** 
 
 ## Use
 
-Needs the code in [`scripts/lot`]({CODE}), Fizgig with the LoT hooks (branch `immiscible-h3-noise`), and the pruned int8 FL2VA DiT (`minimax_h3_fl2va_pruned_int8_convrot.safetensors`).
+Needs the code in [`scripts/lot`]({CODE}), a [musubi-tuner](https://github.com/kohya-ss/musubi-tuner) checkout (`MUSUBI_SRC`), and the pruned int8 FL2VA DiT (`hf download Comfy-Org/MiniMax-H3 diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors`).
 
 ```bash
 hf download {repo} --local-dir runs/lot_hf
 python3 scripts/lot/time_lot_h3.py --shape clip --trained {run}      # timing per layout
-python3 scripts/lot/render_h3.py --trained {run} --swap 4 \\
+python3 scripts/lot/render_h3.py --trained {run} \\
     --layout bands --variants dense,dense_lora,lot_trained   # needs a cache of encoded prompts
 ```
 

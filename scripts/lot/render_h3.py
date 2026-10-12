@@ -4,14 +4,14 @@
     python3 scripts/lot/render_h3.py --pairs DIR [--prompts 3] [--steps 20] [--out DIR]
 
 Text conditioning is a cached H3 text embedding (``*_minimaxh3_te.safetensors``
-from a Fizgig cache), so the Qwen3-VL encoder is never loaded. Every column
+from ``build_cache_h3.py``), so the Qwen3-VL encoder is never loaded. Every column
 starts from the same noise. LoT columns use the 768×1152 band layout
 (``clip_layout(1, 36, 24)``: 1×1, 2×2, 4×2 bands). The fitted column samples in
 y-space and maps the clean latent back with ``to_x`` before decoding. A frozen
 base was never trained on fitted scales, so that column is a smoke, not a
 quality claim.
 
-Decodes with the fp16 H3 decoder after sampling and writes PNGs plus a grid
+Samples with ``h3_musubi.sample`` (Euler, shift 12) and decodes with the H3 video VAE after sampling and writes PNGs plus a grid
 into ``--out`` (default ``scripts/lot/runs/render``, gitignored).
 """
 
@@ -32,8 +32,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from gpu_guard import refuse_if_busy  # noqa: E402
 from h3 import clip_layout, make_h3_adapter  # noqa: E402
@@ -76,8 +75,10 @@ def make_layout(name: str):
     return layout_from_rects(1, token_h, token_w, rects)
 
 
-def to_image(pixels: torch.Tensor) -> Image.Image:
-    array = (pixels[0].permute(1, 2, 0).float().cpu().numpy() * 255.0).round().clip(0, 255)
+def to_image(pixels: torch.Tensor, frame: int = 0) -> Image.Image:
+    """One frame of a decoded ``(1, 3, F, H, W)`` video in ``[-1, 1]``."""
+    rgb = (pixels[0, :, frame].permute(1, 2, 0).float().cpu().numpy() + 1.0) * 0.5
+    array = (rgb * 255.0).round().clip(0, 255)
     return Image.fromarray(array.astype(np.uint8))
 
 
@@ -117,8 +118,7 @@ def main() -> None:
     args = parser.parse_args()
 
     refuse_if_busy("render_h3.py")
-    from fizgig.minimax.loader import load_minimax_h3_dit
-    from fizgig.minimax.sampling import _sample_image_impl
+    from h3_musubi import load_dit, load_vae, make_lora, sample, set_lora
 
     # Build only what the requested variants use: each fp32 adapter is ~200 MB, and with
     # the int8 DiT fully resident there is no room for spares.
@@ -138,34 +138,20 @@ def main() -> None:
         reports = fit_bank(fitted, load_pairs(args.pairs))
         splices["lot_fit"] = LotSplice(fitted.cuda(), layout, y_space=True)
 
-    model = load_minimax_h3_dit(str(CHECKPOINT), device="cuda", compute_dtype=torch.bfloat16,
-                                base_quant="int8", blocks_to_swap=args.swap)
-    if args.swap:
-        model.enable_block_swap(args.swap, h2d_only=True)
-    model.eval()
-    model._tread = None
+    model = load_dit(CHECKPOINT, swap=args.swap)
     network = None
     if args.trained is not None:
-        from fizgig.networks.lora import create_network
-        from train_h3 import LORA_PATTERNS
-
         trained = make_h3_adapter()
         from train_h3 import load_adapter_state
 
         trained.load_state_dict(load_adapter_state(args.trained))
         if "lot_trained" in wanted:
             splices["lot_trained"] = LotSplice(trained.cuda(), layout, y_space=True)
-        network = create_network(None, "lora_unet", 1.0, args.rank, float(args.rank), None, [], model,
-                                 include_patterns=LORA_PATTERNS)
-        network.apply_to(text_encoders=None, unet=model, apply_text_encoder=False, apply_unet=True)
+        network = make_lora(model, args.rank)
         info = network.load_weights(str(args.trained / "lora.safetensors"))
         if info.missing_keys:
             raise RuntimeError(f"LoRA load missed {len(info.missing_keys)} keys")
         network.to(device="cuda", dtype=torch.bfloat16).eval()
-
-    def set_lora(on: bool) -> None:
-        for module in getattr(network, "unet_loras", []):
-            module.multiplier = 1.0 if on else 0.0
 
     held = None
     if args.trained is not None:
@@ -178,42 +164,27 @@ def main() -> None:
     variants = [name for name in args.variants.split(",") if name]
     latents: dict[tuple[int, str], torch.Tensor] = {}
     timings: dict[str, list[float]] = {name: [] for name in variants}
-    seq: dict[str, tuple] = {}
-    def remember(_module, inputs, _output) -> None:
-        # Must return None: a forward hook's return value replaces the block output.
-        seq.setdefault("lot" if model._lot is not None else "dense", tuple(inputs[0].shape))
-
-    hook = model.blocks[0].register_forward_hook(remember)
-    try:
-        for index, (_text, embeds) in enumerate(prompts):
-            embeds = embeds.to("cuda", torch.bfloat16)
-            for name in variants:
-                model._lot = splices.get(name)
-                set_lora(name in ("dense_lora", "lot_trained"))
-                start = time.perf_counter()
-                with torch.inference_mode():
-                    latent = _sample_image_impl(model, embeds, width=WIDTH, height=HEIGHT, steps=args.steps,
-                                                seed=args.seed + index, num_frames=1)
-                torch.cuda.synchronize()
-                timings[name].append(time.perf_counter() - start)
-                if name in ("lot_fit", "lot_trained"):
-                    latent = splices[name].to_x(latent.float())
-                latents[(index, name)] = latent.float().cpu()
-                print(f"LOT_H3 kind=render prompt={index} variant={name} seconds={timings[name][-1]:.1f} "
-                      f"finite={int(bool(torch.isfinite(latent).all()))}", flush=True)
-    finally:
-        hook.remove()
-        model._lot = None
+    seq = {"dense": layout.dense_count, "lot": layout.count}
+    for index, (_text, embeds) in enumerate(prompts):
+        embeds = embeds.to("cuda", torch.bfloat16)
+        for name in variants:
+            if network is not None:
+                set_lora(network, name in ("dense_lora", "lot_trained"))
+            start = time.perf_counter()
+            with torch.inference_mode():
+                latent = sample(model, embeds, width=WIDTH, height=HEIGHT, steps=args.steps,
+                                seed=args.seed + index, lot=splices.get(name))
+            torch.cuda.synchronize()
+            timings[name].append(time.perf_counter() - start)
+            if name in ("lot_fit", "lot_trained"):
+                latent = splices[name].to_x(latent.float())
+            latents[(index, name)] = latent.float().cpu()
+            print(f"LOT_H3 kind=render prompt={index} variant={name} seconds={timings[name][-1]:.1f} "
+                  f"finite={int(bool(torch.isfinite(latent).all()))}", flush=True)
     del model, splices, network
     gc.collect()
-
-    from safetensors import safe_open
-    from fizgig.minimax.vae import MiniMaxH3VideoVAEDecoder
-
-    decoder = MiniMaxH3VideoVAEDecoder()
-    with safe_open(str(VAE), framework="pt", device="cpu") as handle:
-        decoder.load_state_dict({key: handle.get_tensor(key) for key in handle.keys()}, strict=False)
-    decoder = decoder.to("cuda", torch.float16).eval()
+    torch.cuda.synchronize()
+    decoder = load_vae(VAE)
 
     args.out.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -221,7 +192,7 @@ def main() -> None:
         row = []
         for name in variants:
             with torch.inference_mode():
-                image = to_image(decoder.decode(latents[(index, name)].to("cuda")))
+                image = to_image(decoder.decode(latents[(index, name)].to("cuda", next(decoder.parameters()).dtype)))
             image.save(args.out / f"p{index}_{name}.png")
             row.append(image)
         rows.append(row)
@@ -230,7 +201,7 @@ def main() -> None:
     grid(rows, labels).save(args.out / "grid.png")
     meta = {
         "layout": args.layout, "steps": args.steps, "seed": args.seed, "canvas": f"{WIDTH}x{HEIGHT}", "layout_tokens": layout.count,
-        "dense_tokens": layout.dense_count, "seq": {k: list(v) for k, v in seq.items()},
+        "dense_tokens": layout.dense_count, "seq": seq,
         "seconds_median": medians, "prompts": [text for text, _ in prompts],
         "fit": [{**r, "extent": list(r["extent"])} for r in reports],
     }

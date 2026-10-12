@@ -235,7 +235,7 @@ class LotVisualAdapter(nn.Module):
         """Extent heads plus eq. 9, scattered onto the uniform lattice.
 
         Eq. 9 assumes the head predicts ``P eps - x0`` and returns ``eps - x0``.
-        H3's head predicts the negation (``x0 - eps``, Fizgig ``sampling.py``).
+        H3's head predicts the negation (``x0 - eps``; H3's scheduler steps ``x0 = x_t + sigma * v``).
         ``x0_minus_eps=True`` flips the head before recovery and the velocity
         after, so the result stays in the caller's convention. A unit extent has
         no complement, so 1x1 parity cannot see a wrong sign here.

@@ -1,12 +1,12 @@
 # Level-of-Token Diffusion, drop-in for MiniMax-H3
 
-> **⚠️ Research: the published LoT weights still need more training — help wanted: [Fizgig discussions #183](https://github.com/shootthesound/Fizgig/discussions/183).** Quick start and current numbers: [CHEATSHEET.md](CHEATSHEET.md). Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA). ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane).
+> **⚠️ Research: the published LoT weights still need more training — help wanted: [results and help-wanted thread (issue 1)](https://github.com/johndpope/MiniMax-H3/issues/1).** Quick start and current numbers: [CHEATSHEET.md](CHEATSHEET.md). Weights: [HF johndpope/MiniMax-H3-LoT](https://huggingface.co/johndpope/MiniMax-H3-LoT) (MiniMax H3 Community License; not for use in the EU, UK, South Korea or USA). ComfyUI nodes: [ComfyUI-MiniMax-H3-Image-Lane](https://github.com/johndpope/ComfyUI-MiniMax-H3-Image-Lane).
 
 Method code for [Level-of-Token Diffusion](https://arxiv.org/abs/2610.05816) (Nakayama et al., 2026). A LoT layout replaces the uniform visual token grid with rectangles of mixed size. The transformer sees the short sequence. A patch-wise asymmetric flow, taken from LakonLab, turns that sequence back into a dense velocity on the original lattice.
 
 This track is separate from Separable Causal Diffusion. Nothing here imports `scripts/scd`.
 
-This is local research. It does not train FLUX or Wan, and it does not load H3 weights.
+The core modules (`layout`, `flow`, `adapter`, `h3`, `h3_positions`, `h3_splice`, `layout_sources`) import no model code and load no weights. `h3_musubi.py` runs them on H3 through musubi-tuner.
 
 ## What is implemented
 
@@ -65,9 +65,9 @@ python3 scripts/lot/infer.py --ckpt scripts/lot/runs/day/last.pt --steps 8
 
 `sanity.py` is CPU-only. It checks that a mixed layout attends over 6 tokens instead of 64, that the velocity is still the full 8×8 canvas, and that an 8×8 square is rejected by the H3 extent bank. It does not write a checkpoint. `train_synth.py` also writes none unless `--save-every` is positive.
 
-The H3 tail lives in `h3_splice.py`. Fizgig `MiniMaxH3DiT._lot` defaults to `None`. When it is a `LotSplice`, only the target-video rows are shortened, sigma passed into the velocity step is `1 - t`, and `forward_cached` raises. Setting `_lot` and `_tread` together raises. That path does not load a checkpoint by itself.
+The H3 tail lives in `h3_splice.py`; `h3_musubi.py` runs it. H3 itself comes from [musubi-tuner](https://github.com/kohya-ss/musubi-tuner) (Apache-2.0), used as a library and not modified: its loader reads the published ComfyUI ConvRot int8 checkpoints, streams blocks from CPU, and trains LoRAs on the int8 base. `h3_musubi.predict(dit, x, t, text, lot=splice)` repeats musubi's T2VA forward with three changes on the target video only: the splice embeds its rows, their rotary positions become rectangle centres, and the splice's heads replace `video_out` after the shared norm and AdaLN. Text, audio and the block stack are untouched; sigma passed into the velocity step is `1 - t`. With `lot=None` it is musubi's own forward. An untrained all-1×1 splice reproduces that forward exactly (`parity_h3.py`, `rel_rms=0`).
 
-H3's head predicts `x0 - eps`, the negation of what eq. 9 expects. `LotSplice.project_rows` passes `x0_minus_eps=True`, which flips the head before recovery and the velocity after, so the Fizgig sampler steps the result unchanged. A 1×1 basis has no orthogonal complement, so the 1×1 parity cannot catch a wrong sign; `test_h3_head_sign_recovery` does.
+H3's head predicts `x0 - eps`, the negation of what eq. 9 expects. `LotSplice.project_rows` passes `x0_minus_eps=True`, which flips the head before recovery and the velocity after, so H3's samplers step the result unchanged. A 1×1 basis has no orthogonal complement, so the 1×1 parity cannot catch a wrong sign; `test_h3_head_sign_recovery` does.
 
 After a Procrustes fit the scales are not 1, and the DiT input must be y-space. Build the state from `splice.to_y(x0)`, construct `LotSplice(..., y_space=True)`, and map the clean estimate back with `splice.to_x`. A splice without `y_space=True` raises once any scale in its layout differs from 1.
 
@@ -75,9 +75,9 @@ Phase 4 is `procrustes_h3.py --pairs DIR [--smoke] [--out FILE]`. `DIR` holds us
 
 `make_pairs_h3.py` builds those pair files from decoded H3 stills with H3's own encoder: the fine side is `encode(x)` gathered in `eh×ew` blocks, the reference is `encode(resize(x, H/eh, W/ew))`, so one reference token covers one block's pixels. The default source is the 538 Nikki Ref2VA clips (`comfy_t00.png`), 768×1152, which divide by 128 so every extent tiles. Output goes to `runs/pairs_<name>` (gitignored).
 
-`render_h3.py --pairs DIR` samples same-seed 768×1152 stills three ways (dense, LoT with the mean lift, LoT with the fit) from cached H3 text embeddings, so Qwen3-VL is never loaded, and decodes them with the fp16 H3 decoder. `time_decode_h3.py` times one clip decode at the DiT timing shape; LoT does not shorten the VAE.
+`render_h3.py --pairs DIR` samples same-seed 768×1152 stills three ways (dense, LoT with the mean lift, LoT with the fit) from cached H3 text embeddings, so Qwen3-VL is never loaded. It uses `h3_musubi.sample` (Euler, shift 12, the same update as diffusers' `MiniMaxH3Scheduler`) and decodes with the fp16 H3 video VAE. `time_decode_h3.py` times one clip decode at the DiT timing shape; LoT does not shorten the VAE.
 
-`train_h3.py` is phase 5 and refuses to train unless `LOT_H3_TRAIN=1`. It trains the LoT adapter (extent heads, shape MLP) and a rank-16 LoRA on `qkv_proj`, `out_proj`, `fc1`, `fc2` in all 50 blocks; AdaLN, the token refiner, the int8 base and the extent bank stay frozen. Each step samples a layout (20% dense 1×1, uniform extents, or a detail-driven mosaic of 4×4 super-cells), moves the clean latent to y-space, draws sigma with H3's own density, and takes `lot_h3_clean_loss`: eq. 17 with H3's `x0 - eps` head, which is Fizgig's velocity MSE in y-space. Data is a Fizgig still cache with cached text (`cache_iso3d`), so Qwen is not loaded. `--check` runs one forward and backward per layout kind, writes nothing, and needs no flag.
+`train_h3.py` is phase 5 and refuses to train unless `LOT_H3_TRAIN=1`. It trains the LoT adapter (extent heads, shape MLP) and a rank-16 LoRA on `qkv_proj`, `out_proj`, `fc1`, `fc2` in all 50 blocks; AdaLN, the token refiner, the int8 base and the extent bank stay frozen. Each step samples a layout (20% dense 1×1, uniform extents, or a detail-driven mosaic of 4×4 super-cells), moves the clean latent to y-space, draws sigma with H3's own density, and takes `lot_h3_clean_loss`: eq. 17 with H3's `x0 - eps` head, which is the ordinary H3 velocity MSE in y-space. Data is a cache of latents with cached text (`build_cache_h3.py`; default `cache_iso3d`), so Qwen is not loaded. `--check` runs one forward and backward per layout kind, writes nothing, and needs no flag.
 
 `infer.py` loads a `train_synth.py` checkpoint, integrates noise from `t = 1` to `t = 0`, and writes a latent plus a channel-0 preview. It does not call the H3 DiT.
 
@@ -91,14 +91,16 @@ This trains the LoT adapter and a rank-16 LoRA on a frozen int8 H3 base (`train_
 
 **What you need**
 
-- The pruned int8 DiT: `/media/2TB/Fizgig/models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` (the path is set in `procrustes_h3.py`).
-- The H3 video VAE: `/media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors`.
-- The Qwen3-VL text encoder, for caching captions only: `/media/2TB/minimax-h3-nvfp4/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`.
-- Fizgig at `/media/2TB/Fizgig`, with LoT hooks on branch `immiscible-h3-noise`. Its cache scripts need Fizgig's requirements; on this machine the `sdwebui` conda env has them (`~/miniconda3/envs/sdwebui/bin/python`). The LoT scripts themselves run in the base `python3`.
+- A [musubi-tuner](https://github.com/kohya-ss/musubi-tuner) checkout, with its requirements installed: `export MUSUBI_SRC=/path/to/musubi-tuner/src`. Nothing in it is modified.
+- The pruned int8 DiT (`LOT_H3_CHECKPOINT`): `hf download Comfy-Org/MiniMax-H3 diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` (21 GB, the file every LoT run here trained on).
+- The H3 video VAE (`LOT_H3_VAE`): `minimax_h3_video_vae_fp16.safetensors`.
+- The Qwen3-VL text encoder, for caching captions only (`LOT_H3_TEXT_ENCODER`), e.g. `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`.
+
+`lot_paths.py` lists every path variable and this machine's defaults.
 
 ### 1. Cut clips to H3's spec
 
-Fizgig refuses off-spec clips instead of fixing them (`fizgig/minimax/clip.py`). The spec: `.mp4`, exactly 24 fps, a frame count on the 17n+5 grid, and both sides multiples of 32. Audio must be 32 kHz stereo, or no track at all. Train at **22 frames** (`latent_t = 7`), **640×384** landscape or **384×640** portrait. Both give a 12×20 token grid that every LoT extent tiles.
+H3's spec: 24 fps, a frame count on the 17n+5 grid, and both sides multiples of 32. Train at **22 frames** (`latent_t = 7`), **640×384** landscape or **384×640** portrait. Both give a 12×20 token grid that every LoT extent tiles. `build_cache_h3.py media` (step 2) keeps the first 22 frames and crops to `--size`, but cutting windows yourself gives more clips per source:
 
 ```bash
 SRC=talk.mp4; OUT=/data/lot_clips; W=640; H=384   # use W=384 H=640 for portrait footage
@@ -111,35 +113,16 @@ for start in 0 2 4 6 8; do                        # one 22-frame window every 2 
 done
 ```
 
-`-an` drops the audio, and the `_mute` suffix tells Fizgig the clip trains video only. `train_h3` does not train audio; it packs noised silence, as Fizgig does for stills. Write one caption per clip as a same-stem `.txt` next to it (`talk_000_mute.txt`). Captions are free text.
+`-an` drops the audio: `train_h3` does not train audio. It packs H3's audio block as noised silence, because the base was trained with those rows present. Write one caption per clip as a same-stem `.txt` next to it (`talk_000_mute.txt`). Captions are free text. Stills (`.png`/`.jpg`/`.webp` with a `.txt`) can sit in the same folder.
 
-### 2. Cache latents and text (Fizgig)
-
-```toml
-# /data/lot_clips/dataset.toml
-[general]
-resolution = [640, 384]
-batch_size = 1
-enable_bucket = true
-bucket_no_upscale = true
-caption_extension = ".txt"
-num_repeats = 1
-
-[[datasets]]
-image_directory = "/data/lot_clips"
-cache_directory = "/data/lot_clips/cache"
-```
+### 2. Cache latents and text
 
 ```bash
-PY=~/miniconda3/envs/sdwebui/bin/python
-cd /media/2TB/Fizgig
-$PY src/fizgig/scripts/minimax_cache_latents.py --dataset_config /data/lot_clips/dataset.toml \
-    --vae /media/2TB/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors
-$PY src/fizgig/scripts/minimax_cache_text.py --dataset_config /data/lot_clips/dataset.toml \
-    --text_encoder /media/2TB/minimax-h3-nvfp4/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+python3 scripts/lot/build_cache_h3.py media --src /data/lot_clips --out /data/lot_clips/cache --size 640 384
+python3 scripts/lot/build_cache_h3.py text  --out /data/lot_clips/cache     # loads Qwen3-VL; resumable
 ```
 
-Each clip becomes `<stem>_0640x0384_minimaxh3.safetensors` with key `latent_7x24x40`, shape `(24, 7, 24, 40)`, plus `<stem>_minimaxh3_te.safetensors`. The text step is the only one that loads Qwen, in its own process. Run it alone on the GPU, never next to training.
+`media` encodes every clip and still that has a caption with the H3 video VAE (through musubi-tuner) and writes `<stem>_0640x0384_minimaxh3.safetensors` with key `latent_7x24x40`, shape `(24, 7, 24, 40)`, plus `captions.json`. `text` writes `<stem>_minimaxh3_te.safetensors` per caption. It is the only step that loads Qwen, in its own process: run it alone on the GPU, never next to training. Checked here: a 22-frame H3 clip round-trips through the cache at 32.1 dB PSNR.
 
 ### 3. Fit the extent bank once
 
@@ -155,20 +138,20 @@ Every fit line must print `ok=1`. The bank (`A`, `s`) stays frozen during traini
 ```bash
 P=scripts/lot/runs/pairs_nikki_scrya_ref2va_768x1152
 # forward + backward per layout kind, no optimizer step, writes nothing, no flag needed
-python3 scripts/lot/train_h3.py --pairs $P --cache /data/lot_clips/cache --swap 8 --shift 3 --check
+python3 scripts/lot/train_h3.py --pairs $P --cache /data/lot_clips/cache --swap 4 --shift 3 --distill 1 --check
 
 LOT_H3_TRAIN=1 python3 scripts/lot/train_h3.py --pairs $P \
     --cache /data/lot_clips/cache \
-    --cache /media/2TB/lora-data/fizgig_minimax_h3/cache_iso3d \
-    --swap 8 --shift 3 --steps 2000 --save-every 500 \
+    --cache /media/2TB/lora-data/h3_lot/cache_iso3d \
+    --swap 4 --shift 3 --distill 1 --steps 2000 --save-every 500 \
     --init scripts/lot/runs/train_h3 \
     --out scripts/lot/runs/train_h3_clips
 ```
 
 - `--cache` repeats. Mixing clips with stills of other styles stops the LoRA's style learning from masking LoT learning (see "What the first run showed").
-- **Memory, measured:** stills fit at `--swap 4` (20.5 GB peak, ~2.6 s/step). 22-frame clips OOM at `--swap 4` and fit at **`--swap 8`** (20.0 GB peak, 13–17 s/step). Always run `--check` with your exact flags first.
+- **Memory, measured:** 22-frame 512×768 clips fit at `--swap 4` with `--distill 1` (`--check`: 22.3 GB peak, 10–14 s per step including the teacher forward). Always run `--check` with your exact flags first; raise `--swap` if it runs out of memory.
 - `--shift 3` sets the noise density for LoT steps; `--dense-shift` (default 12, H3's own) sets it for the 20% dense anchor steps. `--init` warm-starts from an earlier run's `adapter.pt` / `lora.safetensors` with a fresh optimizer.
-- Each step's loss is `lot_h3_clean_loss`, the paper's eq. 17 with H3's `x0 − ε` head. It equals Fizgig's velocity MSE taken in y-space. A held-out eval runs every 250 steps (dense, all-2×2, and mosaic layouts, plus mosaic error per extent) and goes to `log.jsonl`. Outputs go to `--out` (gitignored under `runs/`).
+- Each step's loss is `lot_h3_clean_loss`, the paper's eq. 17 with H3's `x0 − ε` head. It equals the ordinary H3 velocity MSE taken in y-space. A held-out eval runs every 250 steps (dense, all-2×2, and mosaic layouts, plus mosaic error per extent) and goes to `log.jsonl`. Outputs go to `--out` (gitignored under `runs/`).
 
 ### 5. Look at the result
 

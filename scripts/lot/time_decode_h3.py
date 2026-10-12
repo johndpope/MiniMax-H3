@@ -6,7 +6,7 @@
 LoT shortens the DiT sequence only; the VAE decodes the full latent either way.
 This measures that fixed cost on the same latent shape the DiT timing used
 (768×1344, ``latent_t=37`` -> 124 pixel frames). Content does not change the
-cost, so the latent is random. fp16 decoder, as Fizgig and ComfyUI load it.
+cost, so the latent is random. fp16 decoder, as ComfyUI loads it.
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from gpu_guard import refuse_if_busy  # noqa: E402
 
@@ -35,20 +34,15 @@ def main() -> None:
     args = parser.parse_args()
 
     refuse_if_busy("time_decode_h3.py")
-    from safetensors import safe_open
-    from fizgig.minimax.model import pixel_frames_for_latent
-    from fizgig.minimax.vae import MiniMaxH3VideoVAEDecoder
+    from h3_musubi import load_vae, pixel_frames as pixel_frames_for_latent
 
-    decoder = MiniMaxH3VideoVAEDecoder()
-    with safe_open(str(VAE), framework="pt", device="cpu") as handle:
-        decoder.load_state_dict({key: handle.get_tensor(key) for key in handle.keys()}, strict=False)
-    decoder = decoder.to("cuda", torch.float16).eval()
-    latent = torch.randn(1, 24, args.latent_t, args.height, args.width, device="cuda")
+    decoder = load_vae(VAE)
+    latent = torch.randn(1, 24, args.latent_t, args.height, args.width, device="cuda", dtype=torch.float16)
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     start = time.perf_counter()
     with torch.inference_mode():
-        pixels = decoder.decode_clip(latent)
+        pixels = decoder.decode(latent)
     torch.cuda.synchronize()
     seconds = time.perf_counter() - start
     peak_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)

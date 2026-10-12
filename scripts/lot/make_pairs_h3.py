@@ -38,8 +38,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lot_paths import FIZGIG_SRC, LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
-sys.path.insert(0, FIZGIG_SRC)
+from lot_paths import LOT_H3_CHECKPOINT, LOT_H3_STILLS_CACHE, LOT_H3_STILLS_CAPTIONS, LOT_H3_TEXT_ENCODER, LOT_H3_VAE  # noqa: E402,F401
 
 from flow import gather_extent  # noqa: E402
 from h3 import H3_EXTENTS, H3_TOKEN_DIM, patchify  # noqa: E402
@@ -116,16 +115,14 @@ def main() -> None:
     if not stills:
         raise SystemExit(f"no comfy_{{{args.frames}}}.png under {args.src}")
 
-    from safetensors import safe_open
-    from fizgig.minimax.vae import MiniMaxH3VideoVAEEncoder
+    from h3_musubi import load_vae
 
-    vae = MiniMaxH3VideoVAEEncoder()
-    with safe_open(str(args.vae), framework="pt", device="cpu") as handle:
-        vae.load_state_dict({key: handle.get_tensor(key) for key in handle.keys()}, strict=False)
-    vae = vae.to("cuda", torch.float32).eval()
+    vae = load_vae(args.vae, decoder=False, dtype=torch.float32)
 
     def encode(image: torch.Tensor) -> torch.Tensor:
-        return vae.encode(image.to("cuda"))
+        """``(1, 3, H, W)`` in [-1, 1] -> normalized latent ``(1, 24, 1, H/16, W/16)``."""
+        with torch.inference_mode():
+            return vae.encode(image.to("cuda", torch.float32))
 
     extents = [extent for extent in H3_EXTENTS if extent != UNIT]
     rows: dict[tuple, list] = {extent: [] for extent in extents}
